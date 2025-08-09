@@ -16,7 +16,7 @@
 * Profiling framework that drives decisions.
 * Performance/energy trade-off curves similar to compiler optimization trade-offs.
 
-## LINKS
+## Resources:
 1. Accelerating Large Language Model Decoding with Speculative Sampling (DeepMind)
 https://arxiv.org/abs/2302.01318
 
