@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -xe
+
+cd ~/master-thesis/
+/mnt/c/Program\ Files/Mozilla\ Firefox/firefox.exe output.html

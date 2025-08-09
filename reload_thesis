@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -xe
+
+cd ~/master-thesis/
+ls README.md | entr -r bash -c "pandoc -f markdown -t html5 -o output.html README.md -c style.css"
