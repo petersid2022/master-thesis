@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -xe
+
+nvim README.md +'lua vim.treesitter.start()'
