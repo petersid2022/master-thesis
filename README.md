@@ -11,9 +11,19 @@
 
 ## Introduction
 
-### Βελτιστοποίηση Παραγωγής Κειμένου από Μεγάλα Γλωσσικά Μοντέλα (LLM) μέσω της Τεχνικής Speculative Sampling
+Speculative decoding works like this:
 
-Η εργασία αυτή μελετά την τεχνική speculative sampling, με σκοπό την επιλογή ενός μικρού γλωσσικού μοντέλου (SLM) αντί ενός μεγάλου (LLM), όταν το SLM μπορεί να αποδώσει εξίσου καλά, ενεργοποιώντας το LLM μόνο όταν κρίνεται απαραίτητο. Θα διεξαχθούν πειράματα για τη σύγκριση διαφορετικών προσεγγίσεων, με μετρήσεις χρόνου απόκρισης και κατανάλωσης ενέργειας σε σχέση με τα αρχικά μεγάλα μοντέλα. Ιδιαίτερη έμφαση θα δοθεί (α) στην επιλογή των κατάλληλων μοντέλων και (β) στην επίδρασή τους στην ακρίβεια και στην αποδοτικότητα των αποτελεσμάτων.
+The Small LLM generates a bunch of sequential tokens. Then, the big LLM runs all these in one go.
+
+For each token, if the probability in the large LLM is higher than the probability of the small, it's taken directly (therefore, it's not messing with the large LLM's statistics). If the probability is lower, the chances of it being taken is proportional to the difference in probabilities.
+
+This makes it likely that the token is not taken, and all the effort is wasted.
+
+i.e. if the small model is pretty good, you get a speed up, and you don't change the output, but if its bad, you are wasting lots of compute for nothing, and its overall slower. *See [Branch\_predictor](https://en.wikipedia.org/wiki/Branch_predictor)*
+
+### Optimizing Text Production from Large Language Models (LLM) through the Speculative Sampling Technique
+
+This paper studies the speculative sampling technique, with the aim of choosing a small language model (SLM) instead of a large one (LLM), when the SLM can perform equally well, activating the LLM only when necessary. Experiments will be conducted to compare different approaches, with response time and energy consumption measurements in relation to the initial large models. Particular emphasis will be given to (a) the selection of appropriate models and (b) their impact on the accuracy and efficiency of the results.
 
 An inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, PGO, instruction scheduling) to minimize latency and energy usage.
 
@@ -43,4 +53,4 @@ An inference scheduling problem, drawing from compiler optimization theory (e.g.
 12. [llama.cpp: PoC for speeding-up inference via speculative sampling #2926](https://github.com/ggml-org/llama.cpp/pull/2926)
 13. [ollama: Enable speculative decoding #5800](https://github.com/ollama/ollama/issues/5800)
 
-// vim: wrap cursorline scrolloff=0
+// vim: wrap nonu cole=3
