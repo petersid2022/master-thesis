@@ -2,4 +2,5 @@
 
 set -xe
 
-nvim README.md +'lua vim.treesitter.start()'
+# nvim README.md +'lua vim.treesitter.start()'
+typst w README.typst

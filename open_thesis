@@ -2,6 +2,7 @@
 
 set -xe
 
-cd ~/master-thesis/
+# cd ~/master-thesis/
 # nvim README.md +TOhtml\ output.html +qa
-/mnt/c/Program\ Files/Mozilla\ Firefox/firefox.exe output.html
+# /mnt/c/Program\ Files/Mozilla\ Firefox/firefox.exe output.html
+/mnt/c/Program\ Files/SumatraPDF/SumatraPDF.exe README.pdf
