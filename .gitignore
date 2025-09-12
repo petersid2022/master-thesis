@@ -1,6 +1,7 @@
+*.pdf
+*.txt
 ollama/
 llama.cpp/
-latex-advice/
+bdwgc/
+gc-8.2.8/
 stb/
-*.html
-*.pdf
