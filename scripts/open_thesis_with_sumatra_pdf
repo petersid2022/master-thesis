@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-
-set -xe
-
-# this only works for me
-cd ~/master-thesis/
-
-# only works for wsl2, it's stupid but whatever
-/mnt/c/Program\ Files/SumatraPDF/SumatraPDF.exe README.pdf

@@ -1,4 +1,3 @@
-*.txt
 ollama/
 llama.cpp/
 bdwgc/
@@ -6,3 +5,12 @@ gc-8.2.8/
 stb/
 texpresso/
 examples/
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.pdf
+*.synctex.gz
+*.toc
+*.txt
