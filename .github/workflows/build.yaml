@@ -1,13 +1,30 @@
-name: Build Typst document
+name: Build Typst document to Markdown
 on: push
 
 jobs:
-  build_typst_documents:
+  build_typst_to_markdown:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Typst
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile Typst to PDF
         uses: lvignoli/typst-action@main
         with:
           source_file: README.typ
+          output_file: README.pdf
+
+      - name: Convert PDF to Markdown
+        uses: docker://pandoc/core:3.5
+        with:
+          args: --from=pdf --to=markdown --output=README.md README.pdf
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add README.md
+          git commit -m "Generate README.md from README.typ" || echo "No changes to commit"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
