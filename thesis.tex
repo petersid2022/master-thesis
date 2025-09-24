@@ -1,0 +1,51 @@
+\documentclass[a4paper,12pt]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+\title{Optimizing Text Generation with Large Language Models via Speculative Sampling}
+\author{Petros Sideris}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper investigates the speculative sampling technique, with the goal of using a small language model (SLM) in place of a large one (LLM) when the SLM performs equally well. The large model is activated only when necessary. Experiments will be conducted to compare different approaches, measuring response time and energy consumption in relation to the baseline large models. The focus will be on: (a) the selection of appropriate models, and (b) their impact on both accuracy and efficiency.
+\end{abstract}
+
+\tableofcontents
+
+\chapter{Introduction}
+This research addresses the inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, profile-guided optimization, instruction scheduling) to minimize both latency and energy usage. These parallels arise from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a sequence or graph to optimize (see \href{https://en.wikipedia.org/wiki/Abstract_syntax_tree}{Abstract Syntax Tree}). Previous research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired optimizations could yield even greater improvements, especially for edge cases like long sequences or low-acceptance-rate drafts.
+
+\section{Speculative Decoding Overview}
+Speculative decoding functions as follows:
+\begin{itemize}
+\item The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
+\item For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor})}
+\item Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
+\item Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common subexpression elimination on token probabilities) to optimize the tree exploration.
+\item Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
+\end{itemize}
+
+\section*{Keywords}
+\begin{itemize}
+    \item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}
+    \item Compiler-inspired runtime design for speculative text generation with multi-model pipelines
+    \item Prediction-and-scheduling runtime with compiler-like heuristics
+    \item Code generation for inference graphs
+    \item SLM–LLM pipeline as an intermediate representation (IR)
+    \item Adaptive runtime scheduler (like a JIT) for inference
+    \item Profiling framework that drives scheduling decisions
+    \item Performance/energy trade-offs akin to compiler optimization trade-offs
+    \item Investigate the impact of speculative sampling on LLM performance
+    \item Develop methods to enhance the diversity of generated text
+    \item Propose optimizations to improve generation speed while maintaining high-quality output
+\end{itemize}
+
+\end{document}

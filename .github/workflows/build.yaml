@@ -1,30 +1,31 @@
-name: Build Typst document to Markdown
-on: push
+name: Compile Thesis
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
-  build_typst_to_markdown:
+  latex:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Compile Typst to PDF
-        uses: lvignoli/typst-action@main
+      - name: Compile LaTeX document
+        uses: xu-cheng/latex-action@v2
         with:
-          source_file: README.typ
-          output_file: README.pdf
-
-      - name: Convert PDF to Markdown
-        uses: docker://pandoc/core:3.5
-        with:
-          args: --from=typst --to=markdown --output=README.md README.typ
-
-      - name: Commit and push
-        run: |
-          git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
-          git add README.md
-          git commit -m "Generate README.md from README.typ" || echo "No changes to commit"
-          git push
+          root_file: thesis.tex
+          working_directory: .
+      - name: Create GitHub Release and Upload PDF
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: thesis-${{ github.sha }}
+          release_name: Thesis Release ${{ github.sha }}
+          body: "This is the compiled PDF of my thesis."
+          draft: false
+          prerelease: false
+          files: thesis.pdf
