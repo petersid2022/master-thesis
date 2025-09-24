@@ -1,4 +1,3 @@
-*.pdf
 *.txt
 ollama/
 llama.cpp/
