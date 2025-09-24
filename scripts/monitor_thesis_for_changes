@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+set -xe
+
+# this only works for me
+cd ~/master-thesis/
+
+typst w README.typ
