@@ -1,91 +1,41 @@
-#import "style.typ": *
+#import "@preview/unequivocal-ams:0.1.2": *
 
-#align(center, text(17pt)[
-  *Optimizing Text Generation with Large language Models via Speculative Sampling.*
-])
+#show: ams-article.with(
+  title: [Optimizing Text Generation with Large language Models via Speculative Sampling],
+  authors: (
+    (
+      name: "Petros Sideris",
+      department: [Department of Electrical and Computer Engineering],
+      organization: [Democritus University of Thrace],
+      location: [Xanthi, Greece],
+      email: "petrside@ee.duth.gr",
+    ),
+  ),
+  abstract: "This paper studies the speculative sampling technique, with the aim of choosing a small language model (SLM) instead of a large one (LLM), when the SLM can perform equally well, activating the LLM only when necessary. Experiments will be conducted to compare different approaches, with response time and energy consumption measurements in relation to the initial large models. Particular emphasis will be given to (a) the selection of appropriate models and (b) their impact on the accuracy and efficiency of the results",
+)
 
-= Table of contents
-<table-of-contents>
-+ #link(<abstract>)[Abstract]
-+ #link(<introduction>)[Introduction]
-+ #link(<keywords>)[Keywords]
-+ #link(<resources>)[Resources]
-
-= Abstract
-<abstract>
 = Introduction
-<introduction>
-#emph["compiler for speculative inference"]
+An inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, PGO, instruction scheduling) to minimize latency and energy usage. These overlaps stem from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a graph or sequence to transform (See: #link("https://en.wikipedia.org/wiki/Abstract_syntax_tree")[Abstract Syntax Tree]). Research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired opts could push this further, especially for edge cases like long sequences or low-acceptance-rate drafts
 
-This paper studies the speculative sampling technique, with the aim of
-choosing a small language model (SLM) instead of a large one (LLM), when
-the SLM can perform equally well, activating the LLM only when
-necessary. Experiments will be conducted to compare different
-approaches, with response time and energy consumption measurements in
-relation to the initial large models. Particular emphasis will be given
-to (a) the selection of appropriate models and (b) their impact on the
-accuracy and efficiency of the results.
+== Speculative decoding/sampling works like this:
++ The Small LLM generates a bunch of sequential tokens. Then, the big LLM runs all these in one go.
++ For each token, if the probability in the large LLM is higher than the probability of the small, it’s taken directly (therefore, it’s not messing with the large LLM’s statistics). If the probability is lower, the chances of it being taken is proportional to the difference in probabilities. This makes it likely that the token is not taken, and all the effort is wasted. I.e. if the small model is pretty good, we get a speed up, and we don’t change the output, but if its bad, we are wasting lots of compute for nothing, and its overall slower. #emph[See #link("https://en.wikipedia.org/wiki/Branch_predictor")[Branch Predictor]]
 
-An inference scheduling problem, drawing from compiler optimization
-theory (e.g., branch prediction, PGO, instruction scheduling) to
-minimize latency and energy usage.
-
-#blockquote[
-These overlaps stem from the fact that LLM inference can be viewed as a
-computational pipeline, similar to how compilers treat code as a graph
-or sequence to transform.
-]
-
-Research shows speedups of 2-3x from speculative decoding alone, and
-layering compiler-inspired opts could push this further, especially for
-edge cases like long sequences or low-acceptance-rate drafts.
-
-=== Speculative decoding/sampling works like this:
-<speculative-decodingsampling-works-like-this>
-+ The Small LLM generates a bunch of sequential tokens. Then, the big
-  LLM runs all these in one go.
-+ For each token, if the probability in the large LLM is higher than the
-  probability of the small, it’s taken directly (therefore, it’s not
-  messing with the large LLM’s statistics). If the probability is lower,
-  the chances of it being taken is proportional to the difference in
-  probabilities.
-
-This makes it likely that the token is not taken, and all the effort is
-wasted.
-
-i.e. if the small model is pretty good, we get a speed up, and we don’t
-change the output, but if its bad, we are wasting lots of compute for
-nothing, and its overall slower. #emph[See
-#link("https://en.wikipedia.org/wiki/Branch_predictor")[Branch\_predictor]]
-
-- These speculative decoding variants allow tokens to exit the model
-  early if confident, analogous to compiler optimizations like function
-  inlining or dead code elimination to skip unnecessary computations.
-- Speculative sampling often builds a tree of possible token paths
-  during drafting. we could apply compiler-style graph transformations
-  (e.g., pruning redundant branches via static analysis or common
-  subexpression elimination on token probabilities) to make the tree
-  exploration more efficient.
-- In compilers, scheduling reorders operations for parallelism. In
-  speculative sampling, we could "schedule" draft token generation to
-  prioritize high-probability paths, inspired by compiler techniques for
-  out-of-order execution.
++ These speculative decoding variants allow tokens to exit the model early if confident, analogous to compiler optimizations like function inclining or dead code elimination to skip unnecessary computations.
++ Speculative sampling often builds a tree of possible token paths during drafting. We could apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common sub expression elimination on token probabilities) to make the tree exploration more efficient.
++ In compilers, scheduling reorders operations for parallelism. In speculative sampling, we could "schedule" draft token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
 
 == Keywords
-<keywords>
-- #link("https://en.wikipedia.org/wiki/Scheduling_(computing)")[Scheduling (computing)]
-- Compiler-inspired runtime design for speculative text generation with
-  multi-model pipelines
-- A prediction-and-scheduling runtime with compiler-like heuristics
-- Code generation for inference graphs
-- SLM–LLM pipeline as an IR (intermediate representation)
-- Adaptive runtime scheduler (like a JIT) for inference.
-- Profiling framework that drives decisions.
-- Performance/energy trade-off curves similar to compiler optimization
-  trade-offs.
++ #link("https://en.wikipedia.org/wiki/Scheduling_(computing)")[Scheduling (computing)]
++ Compiler-inspired runtime design for speculative text generation with multi-model pipelines
++ A prediction-and-scheduling runtime with compiler-like heuristics
++ Code generation for inference graphs
++ SLM–LLM pipeline as an IR (intermediate representation)
++ Adaptive runtime scheduler (like a JIT) for inference.
++ Profiling framework that drives decisions.
++ Performance/energy trade-off curves similar to compiler optimization trade-offs.
 
 == Resources
-<resources>
 + #link("https://arxiv.org/abs/2302.01318")[Accelerating Large Language Model Decoding with Speculative Sampling (DeepMind)]
 + #link("https://arxiv.org/abs/2308.04623")[Accelerating LLM Inference with Staged Speculative Decoding]
 + #link("https://news.ycombinator.com/item?id=43216518")[Looking Back at Speculative Decoding]
