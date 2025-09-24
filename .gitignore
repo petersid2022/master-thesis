@@ -4,6 +4,7 @@ bdwgc/
 gc-8.2.8/
 stb/
 texpresso/
+latex-advice/
 examples/
 *.aux
 *.fdb_latexmk
