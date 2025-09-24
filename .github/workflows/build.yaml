@@ -17,7 +17,7 @@ jobs:
       - name: Convert PDF to Markdown
         uses: docker://pandoc/core:3.5
         with:
-          args: --from=pdf --to=markdown --output=README.md README.pdf
+          args: --from=typst --to=markdown --output=README.md README.pdf
 
       - name: Commit and push
         run: |
