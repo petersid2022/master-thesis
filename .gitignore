@@ -5,6 +5,7 @@ gc-8.2.8/
 stb/
 texpresso/
 latex-advice/
+ik_llama.cpp/
 examples/
 *.aux
 *.fdb_latexmk
@@ -15,3 +16,5 @@ examples/
 *.synctex.gz
 *.toc
 *.synctex.gz.sum.synctex
+.venv/
+*.py
