@@ -6,7 +6,7 @@
 Transformer decoding remains a highly costly and inefficient process in this regime. Since each new token depends on the past, many such transformer calls are required to sample a new sequence. Whilst transformers can be trained efficiently and in parallel on TPUs and GPUs, samples are typically drawn auto-regressively. For most applications, auto-regressive sampling (ArS) is highly memory bandwidth bound and thus cannot make effective use of modern accelerator hardware (Shazeer, 2019). A memory bound model call only generates a single token for every sequence in the batch, hence generating multiple tokens introduces a large amount of latency in any system which makes use of it.
 
                                 === Solution ===
-Speculative Sampling (SpS): an algorithm for accelerating transformer decoding by enabling the generation of multiple tokens from each transformer call. (SIMD)
+Speculative Sampling (SpS): an algorithm for accelerating transformer decoding by enabling the generation of multiple tokens from each transformer call.
 
                                === Algorithm ===
 [1] Generate a short draft of length K (draft model)
@@ -38,6 +38,7 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
                   https://github.com/ollama/ollama/issues/5800
                  https://ralphmao.github.io/ML-software-system
             https://huggingface.co/blog/whisper-speculative-decoding
+                https://github.com/ggml-org/llama.cpp/pull/10362
+                        https://arxiv.org/abs/2211.17192
 
-
-// vim: nonu
+// vim: nonu spell hls
