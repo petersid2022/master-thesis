@@ -6,6 +6,7 @@ stb/
 texpresso/
 latex-advice/
 ik_llama.cpp/
+ggml/
 examples/
 *.aux
 *.fdb_latexmk
