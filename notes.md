@@ -1,4 +1,4 @@
-# [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/pdf/2302.01318)
+# [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
 > [!TIP]
 > auto-regressive sampling vs speculative sampling
 
@@ -25,29 +25,44 @@ Speculative Sampling (SpS): an algorithm for accelerating transformer decoding b
 ## Conclusion
 We show that the expected acceptance rate of draft tokens is sufficient to offset the overhead of the drafting process for large language models (LLMs), resulting in an effective and practical method for reducing sampling latency without the need for modifying the target model or biasing the sample distribution.
 
+# [A Hitchhiker’s Guide to Speculative Decoding](https://pytorch.org/blog/hitchhikers-guide-speculative-decoding/)
+> [!TIP]
+> By Team PyTorch. May 2, 2024
+
+## Key takeaways
+1. Speculative decoding : an optimization technique for inference that makes educated guesses about future tokens while generating the current token.
+2. All within a single forward pass. No [backpatching](https://www.geeksforgeeks.org/compiler-design/backpatching-in-compiler-design/)
+3. Based on the premise that the model is powerful enough to predict multiple tokens in a single forward pass.
+4. It incorporates a verification mechanism to ensure the correctness of these speculated tokens
+5. Thereby guaranteeing that the overall output of speculative decoding is identical to that of vanilla decoding.
+
+# [Speculative Sampling Explained](https://saibo-creator.github.io/post/2024_03_08_speculative_sampling)
+> [!TIP]
+> Use a draft sampling to achieve the same sampling result as the target sampling
 
 # Resources
-1. https://github.com/hemingkx/SpeculativeDecodingPapers
-2. https://arxiv.org/abs/2302.01318
-3. https://arxiv.org/abs/2308.04623
-4. https://news.ycombinator.com/item?id=43216518
-5. https://arxiv.org/abs/2106.04970
-6. https://pytorch.org/blog/hitchhikers-guide-speculative-decoding
-7. https://research.google/blog/looking-back-at-speculative-decoding
-8. https://arxiv.org/abs/2408.15766
-9. https://news.ycombinator.com/item?id=37390024
-10. https://news.ycombinator.com/item?id=37357783
-11. https://saibo-creator.github.io/post/2024_03_08_speculative_sampling
-12. https://github.com/ggml-org/llama.cpp/issues/2030
-13. https://github.com/ggml-org/llama.cpp/pull/2926
-14. https://github.com/ollama/ollama/issues/5800
-15. https://ralphmao.github.io/ML-software-system
-16. https://huggingface.co/blog/whisper-speculative-decoding
-17. https://github.com/ggml-org/llama.cpp/pull/10362
-18. https://arxiv.org/abs/2211.17192
-19. https://colab.research.google.com/github/sanchit-gandhi/notebooks/blob/main/speculative_decoding.ipynb#scrollTo=af0b3757-72dc-48a8-9d9d-fc135386cae5
+1. [Must-read papers and blogs on Speculative Decoding](https://github.com/hemingkx/SpeculativeDecodingPapers)
+2. [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
+3. [Accelerating LLM Inference with Staged Speculative Decoding](https://arxiv.org/abs/2308.04623)
+4. [Looking Back at Speculative Decoding](https://news.ycombinator.com/item?id=43216518)
+5. [Instantaneous Grammatical Error Correction with Shallow Aggressive Decoding](https://arxiv.org/abs/2106.04970)
+6. [A Hitchhiker’s Guide to Speculative Decoding](https://pytorch.org/blog/hitchhikers-guide-speculative-decoding)
+7. [Looking back at speculative decoding](https://research.google/blog/looking-back-at-speculative-decoding)
+8. [Learning Harmonized Representations for Speculative Sampling](https://arxiv.org/abs/2408.15766)
+9. [Llama.cpp speculative sampling: 2x faster inference for large models](https://news.ycombinator.com/item?id=37390024)
+10. [Speculative: PoC for speeding-up inference via speculative sampling by ggerganov](https://news.ycombinator.com/item?id=37357783)
+11. [Speculative Sampling Explained](https://saibo-creator.github.io/post/2024_03_08_speculative_sampling)
+12. [llama : add example for speculative sampling #2030](https://github.com/ggml-org/llama.cpp/issues/2030)
+13. [speculative : PoC for speeding-up inference via speculative sampling #2926](https://github.com/ggml-org/llama.cpp/pull/2926)
+14. [Enable speculative decoding #5800](https://github.com/ollama/ollama/issues/5800)
+15. [Understanding LLM System with 3-layer Abstraction](https://ralphmao.github.io/ML-software-system)
+16. [Speculative Decoding for 2x Faster Whisper Inference](https://huggingface.co/blog/whisper-speculative-decoding)
+17. [speculative : refactor and add a simpler example #10362](https://github.com/ggml-org/llama.cpp/pull/10362)
+18. [Fast Inference from Transformers via Speculative Decoding](https://arxiv.org/abs/2211.17192)
+19. [speculative_decoding.ipynb](https://colab.research.google.com/github/sanchit-gandhi/notebooks/blob/main/speculative_decoding.ipynb#scrollTo=af0b3757-72dc-48a8-9d9d-fc135386cae5)
+20. [Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads](https://arxiv.org/abs/2401.10774)
 
 # Footnote
 1. `logit(p) = log(p/(1-p))` is the raw, denormalized predictions generated by a model before applying any activation function
 
-<!-- vim: nonu spell hls
+<!-- vim: nonu spell hls cole=3
