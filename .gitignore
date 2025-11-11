@@ -8,6 +8,8 @@ latex-advice/
 ik_llama.cpp/
 ggml/
 examples/
+models/
+.venv/
 *.aux
 *.fdb_latexmk
 *.fls
@@ -17,5 +19,4 @@ examples/
 *.synctex.gz
 *.toc
 *.synctex.gz.sum.synctex
-.venv/
 *.py
