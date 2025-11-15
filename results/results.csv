@@ -3,3 +3,4 @@ results,date,speculative,type,draft,target
 2.md,12_Nov_2025,yes,cpu_14,Llama-3.2-3B-Instruct-IQ3_M.gguf,Llama-3.2-3B-Instruct-Q5_K_M.gguf
 3.md,12_Nov_2025,no,cpu_14,,Llama-3.2-3B-Instruct-Q5_K_M.gguf
 4.md,12_Nov_2025,yes,cpu_14,Llama-3.2-3B-Instruct-IQ3_M.gguf,Llama-3.2-3B-Instruct-Q5_K_M.gguf
+5.md,15_Nov_2025,yes,cpu_14,Qwen2.5-Coder-3B-Instruct-Q5_K_L.gguf,Qwen2.5-Coder-14B-Instruct-Q5_K_L.gguf

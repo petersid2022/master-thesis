@@ -1,4 +1,21 @@
 # Intro
+
+Speculative decoding provides speedups when the draft model is fast and accurate enough that most speculative tokens are accepted. On GPU this works well because the cost of evaluating multiple tokens in parallel is low.
+
+On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
+
+Speculative sampling was invented for GPUs, where:
+* draft model runs on tensor cores
+* target model runs on tensor cores
+* parallel kernels overlap efficiently
+* memory bandwidth is massive
+
+Speculative sampling only helps if:
+* Draft model is much faster per token than target
+* Hardware can evaluate both models in parallel efficiently
+* Draft acceptance rate is high enough (ideally >60%)
+
+Speculative sampling is GPU-optimized
 This research addresses the inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, profile-guided optimization, instruction scheduling) to minimize both latency and energy usage. These parallels arise from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a sequence or graph to optimize (see [https://en.wikipedia.org/wiki/Abstract_syntax_tree](Abstract Syntax Tree)). Previous research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired optimizations could yield even greater improvements, especially for edge cases like long sequences or low-acceptance-rate drafts.
 
 ## The idea:
@@ -74,15 +91,15 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 6. Inference from large models is often not bottlenecked on arithmetic operations, but rather on memory bandwidth and communication --> thus additional computation resources might be available
 
 # Resources
-1. [Must-read papers and blogs on Speculative Decoding](https://github.com/hemingkx/SpeculativeDecodingPapers)
-2. [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
-3. [Accelerating LLM Inference with Staged Speculative Decoding](https://arxiv.org/abs/2308.04623)
-4. [Looking Back at Speculative Decoding](https://news.ycombinator.com/item?id=43216518)
-5. [Instantaneous Grammatical Error Correction with Shallow Aggressive Decoding](https://arxiv.org/abs/2106.04970)
-6. [A Hitchhiker’s Guide to Speculative Decoding](https://pytorch.org/blog/hitchhikers-guide-speculative-decoding)
-7. [Looking back at speculative decoding](https://research.google/blog/looking-back-at-speculative-decoding)
-8. [Learning Harmonized Representations for Speculative Sampling](https://arxiv.org/abs/2408.15766)
-9. [Llama.cpp speculative sampling: 2x faster inference for large models](https://news.ycombinator.com/item?id=37390024)
+ 1. [Must-read papers and blogs on Speculative Decoding](https://github.com/hemingkx/SpeculativeDecodingPapers)
+ 2. [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
+ 3. [Accelerating LLM Inference with Staged Speculative Decoding](https://arxiv.org/abs/2308.04623)
+ 4. [Looking Back at Speculative Decoding](https://news.ycombinator.com/item?id=43216518)
+ 5. [Instantaneous Grammatical Error Correction with Shallow Aggressive Decoding](https://arxiv.org/abs/2106.04970)
+ 6. [A Hitchhiker’s Guide to Speculative Decoding](https://pytorch.org/blog/hitchhikers-guide-speculative-decoding)
+ 7. [Looking back at speculative decoding](https://research.google/blog/looking-back-at-speculative-decoding)
+ 8. [Learning Harmonized Representations for Speculative Sampling](https://arxiv.org/abs/2408.15766)
+ 9. [Llama.cpp speculative sampling: 2x faster inference for large models](https://news.ycombinator.com/item?id=37390024)
 10. [Speculative: PoC for speeding-up inference via speculative sampling by ggerganov](https://news.ycombinator.com/item?id=37357783)
 11. [Speculative Sampling Explained](https://saibo-creator.github.io/post/2024_03_08_speculative_sampling)
 12. [llama : add example for speculative sampling #2030](https://github.com/ggml-org/llama.cpp/issues/2030)
