@@ -9,6 +9,7 @@ ik_llama.cpp/
 ggml/
 examples/
 models/
+RSD/
 .venv/
 *.aux
 *.fdb_latexmk
