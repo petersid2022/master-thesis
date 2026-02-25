@@ -4,6 +4,9 @@ Speculative decoding provides speedups when the draft model is fast and accurate
 
 On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
 
+How Speculative Sampling works in general (from: [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](reward-guided-speculative-decoding-for-efficient-llm-reasoning))
+The smaller model serves as a guide, proposing the overall sequences that the larger model can confirm or adjust, leading to faster inference without compromising quality.
+
 Speculative sampling was invented for GPUs, where:
 * draft model runs on tensor cores
 * target model runs on tensor cores
@@ -21,16 +24,16 @@ This research addresses the inference scheduling problem, drawing from compiler 
 ## The idea:
 1. The small model proposes several next tokens (a "draft" sequence).
 2. The large model verifies them in parallel.
-3. If the proposals are likely under the large model, they are accepted, saving time because the large model doesn’t need to compute them token-by-token
+3. If the proposals are likely under the large model, they are accepted, saving time because the large model doesn't need to compute them token-by-token
 
 ## Speculative decoding functions as follows:
 1. The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
 2. For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process.    See: [https://en.wikipedia.org/wiki/Branch_predictor](Branch predictor)
 3. Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
-4. Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common subexpression elimination on token probabilities) to optimize the tree exploration.
+4. Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common sub expression elimination on token probabilities) to optimize the tree exploration.
 5. Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
 
-These are softmax probabilities over the vocabulary, the same kind of probabilities used during standard next-token sampling in an LLM.
+These are soft-max probabilities over the vocabulary, the same kind of probabilities used during standard next-token sampling in an LLM.
 
 # [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
 > [!TIP]
@@ -90,6 +93,15 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 5. Some inference steps are "harder" and some are "easier"
 6. Inference from large models is often not bottlenecked on arithmetic operations, but rather on memory bandwidth and communication --> thus additional computation resources might be available
 
+# [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](https://arxiv.org/abs/2501.19324)
+> [!TIP]
+> Unlike the normal SpS, incorporate controlled bias to prioritize high-reward outputs.
+
+## Key takeaways
+1. Evaluate intermediate decoding steps and dynamically decide (threshold based) to invoke the target model.
+2. Unbiasedness maintains theoretical fidelity but often reduces efficiency (especially when the draft diverges from the target)
+3. Allowing controlled bias (where the final distribution deviates slightly from the large model) can improve performance
+
 # Resources
  1. [Must-read papers and blogs on Speculative Decoding](https://github.com/hemingkx/SpeculativeDecodingPapers)
  2. [Accelerating Large Language Model Decoding with Speculative Sampling](https://arxiv.org/abs/2302.01318)
@@ -111,6 +123,9 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 18. [Fast Inference from Transformers via Speculative Decoding](https://arxiv.org/abs/2211.17192)
 19. [speculative_decoding.ipynb](https://colab.research.google.com/github/sanchit-gandhi/notebooks/blob/main/speculative_decoding.ipynb#scrollTo=af0b3757-72dc-48a8-9d9d-fc135386cae5)
 20. [Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads](https://arxiv.org/abs/2401.10774)
+21. [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](https://arxiv.org/abs/2501.19324)
 
 # Footnote
 1. `logit(p) = log(p/(1-p))` is the raw, denormalized predictions generated by a model before applying any activation function
+
+# vim: nonu cole=3
