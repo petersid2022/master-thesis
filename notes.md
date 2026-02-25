@@ -95,7 +95,7 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 # [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](https://arxiv.org/abs/2501.19324)
 > [!TIP]
-> Unlike the normal SpS, incorporate controlled bias to prioritize high-reward outputs.
+> Unlike normal speculative sampling we incorporate controlled bias to prioritize high-reward outputs.
 
 ## Key takeaways
 1. Evaluate intermediate decoding steps and dynamically decide (threshold based) to invoke the target model.

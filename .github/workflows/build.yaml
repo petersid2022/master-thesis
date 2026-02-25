@@ -1,15 +1,62 @@
 name: Compile Thesis
+
 on:
   push:
     paths:
       - thesis.tex
+      - notes.md
 
 permissions:
   contents: write
 
 jobs:
+  spellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install aspell dictionaries (English + Greek)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aspell aspell-en aspell-el
+      - name: Spellcheck notes.md and thesis.tex (English + Greek)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          check_bilingual() {
+            local file="$1"
+            local mode="$2"
+            local tmpdir
+            tmpdir="$(mktemp -d)"
+
+            # words flagged by english dictionary
+            aspell --lang=en_US --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/en.txt"
+            # words flagged by greek dictionary
+            aspell --lang=el_GR --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/el.txt"
+
+            # real suspects = words misspelled in BOTH dictionaries
+            comm -12 "$tmpdir/en.txt" "$tmpdir/el.txt" > "$tmpdir/miss.txt"
+
+            if [[ -s "$tmpdir/miss.txt" ]]; then
+              echo "Misspellings found in $file:"
+              cat "$tmpdir/miss.txt"
+              echo
+              return 1
+            else
+              echo "No misspellings found in $file"
+            fi
+          }
+
+          failed=0
+          check_bilingual notes.md markdown || failed=1
+          check_bilingual thesis.tex tex || failed=1
+
+          exit $failed
+
   latex:
     runs-on: ubuntu-latest
+    needs: spellcheck
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,11 +68,11 @@ jobs:
       - name: Create GitHub Release and Upload PDF
         uses: softprops/action-gh-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
         with:
-          tag_name: thesis-${{ github.sha }}
-          release_name: Thesis Release ${{ github.sha }}
-          body: "This is the compiled PDF of my thesis."
+          tag_name: 'thesis-${{ github.sha }}'
+          release_name: 'Thesis Release ${{ github.sha }}'
+          body: This is the compiled PDF of my thesis.
           draft: false
           prerelease: false
           files: thesis.pdf
