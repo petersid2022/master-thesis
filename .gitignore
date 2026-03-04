@@ -10,6 +10,7 @@ ggml/
 examples/
 models/
 RSD/
+ssd/
 .venv/
 *.aux
 *.fdb_latexmk
