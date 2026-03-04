@@ -15,7 +15,7 @@
 \maketitle
 
 \begin{abstract}
-This paper investigates the speculative sampling technique, with the goal of using a small language model (SLM) in place of a large one (LLM) when the SLM performs equally well. The large model is activated only when necessary. Experiments will be conducted to compare different approaches, measuring response time and energy consumption in relation to the baseline large models. The focus will be on: (a) the selection of appropriate models, and (b) their impact on both accuracy and efficiency.
+	This paper investigates the speculative sampling technique, with the goal of using a small language model (SLM) in place of a large one (LLM) when the SLM performs equally well. The large model is activated only when necessary. Experiments will be conducted to compare different approaches, measuring response time and energy consumption in relation to the baseline large models. The focus will be on: (a) the selection of appropriate models, and (b) their impact on both accuracy and efficiency.
 \end{abstract}
 
 \tableofcontents
@@ -26,47 +26,47 @@ This research addresses the inference scheduling problem, drawing from compiler 
 \section{Speculative Decoding Overview}
 Speculative decoding functions as follows:
 \begin{itemize}
-\item The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
-\item For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor})}
-\item Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
-\item Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common subexpression elimination on token probabilities) to optimize the tree exploration.
-\item Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
+	\item The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
+	\item For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor})}
+	\item Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
+	\item Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common subexpression elimination on token probabilities) to optimize the tree exploration.
+	\item Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
 \end{itemize}
 
 \section*{Keywords}
 \begin{itemize}
-    \item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}
-    \item Compiler-inspired runtime design for speculative text generation with multi-model pipelines
-    \item Prediction-and-scheduling runtime with compiler-like heuristics
-    \item Code generation for inference graphs
-    \item SLM–LLM pipeline as an intermediate representation (IR)
-    \item Adaptive runtime scheduler (like a JIT) for inference
-    \item Profiling framework that drives scheduling decisions
-    \item Performance/energy trade-offs akin to compiler optimization trade-offs
-    \item Investigate the impact of speculative sampling on LLM performance
-    \item Develop methods to enhance the diversity of generated text
-    \item Propose optimizations to improve generation speed while maintaining high-quality output
+	\item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}
+	\item Compiler-inspired runtime design for speculative text generation with multi-model pipelines
+	\item Prediction-and-scheduling runtime with compiler-like heuristics
+	\item Code generation for inference graphs
+	\item SLM–LLM pipeline as an intermediate representation (IR)
+	\item Adaptive runtime scheduler (like a JIT) for inference
+	\item Profiling framework that drives scheduling decisions
+	\item Performance/energy trade-offs akin to compiler optimization trade-offs
+	\item Investigate the impact of speculative sampling on LLM performance
+	\item Develop methods to enhance the diversity of generated text
+	\item Propose optimizations to improve generation speed while maintaining high-quality output
 \end{itemize}
 
 \section*{Resources}
 \begin{enumerate}
-    \item \href{https://arxiv.org/abs/2302.01318}{Accelerating Large Language Model Decoding with Speculative Sampling (DeepMind)}
-    \item \href{https://arxiv.org/abs/2308.04623}{Accelerating LLM Inference with Staged Speculative Decoding}
-    \item \href{https://news.ycombinator.com/item?id=43216518}{Looking Back at Speculative Decoding}
-    \item \href{https://arxiv.org/abs/2106.04970}{Instantaneous Grammatical Error Correction with Shallow Aggressive Decoding}
-    \item \href{https://pytorch.org/blog/hitchhikers-guide-speculative-decoding/}{A Hitchhiker’s Guide to Speculative Decoding - By Team PyTorch at IBM}
-    \item \href{https://colab.research.google.com/github/sanchit-gandhi/notebooks/blob/main/speculative_decoding.ipynb#scrollTo=baf87589-b7fe-45dd-a6f6-9b9223581562}{Speculative Decoding for 2x Faster Whisper Inference}
-    \item \href{https://research.google/blog/looking-back-at-speculative-decoding/}{Looking back at speculative decoding}
-    \item \href{https://arxiv.org/abs/2408.15766}{Learning Harmonized Representations for Speculative Sampling}
-    \item \href{https://news.ycombinator.com/item?id=37390024}{Llama.cpp speculative sampling: 2x faster inference for large models}
-    \item \href{https://news.ycombinator.com/item?id=37357783}{Speculative: PoC for speeding-up inference via speculative sampling by ggerganov}
-    \item \href{https://saibo-creator.github.io/post/2024_03_08_speculative_sampling/}{Speculative Sampling Explained}
-    \item \href{https://github.com/ggml-org/llama.cpp/issues/2030}{llama.cpp: add example for speculative sampling \#2030}
-    \item \href{https://github.com/ggml-org/llama.cpp/pull/2926}{llama.cpp: PoC for speeding-up inference via speculative sampling \#2926}
-    \item \href{https://github.com/ollama/ollama/issues/5800}{ollama: Enable speculative decoding \#5800}
-    \item \href{https://ralphmao.github.io/ML-software-system/}{Understanding LLM System with 3-layer Abstraction}
-    \item \href{https://huggingface.co/blog/whisper-speculative-decoding}{Speculative Decoding for 2x Faster Whisper Inference}
-    \item \href{https://arxiv.org/abs/2211.17192}{Fast Inference from Transformers via Speculative Decoding}
+	\item \href{https://arxiv.org/abs/2302.01318}{Accelerating Large Language Model Decoding with Speculative Sampling (DeepMind)}
+	\item \href{https://arxiv.org/abs/2308.04623}{Accelerating LLM Inference with Staged Speculative Decoding}
+	\item \href{https://news.ycombinator.com/item?id=43216518}{Looking Back at Speculative Decoding}
+	\item \href{https://arxiv.org/abs/2106.04970}{Instantaneous Grammatical Error Correction with Shallow Aggressive Decoding}
+	\item \href{https://pytorch.org/blog/hitchhikers-guide-speculative-decoding/}{A Hitchhiker’s Guide to Speculative Decoding - By Team PyTorch at IBM}
+	\item \href{https://colab.research.google.com/github/sanchit-gandhi/notebooks/blob/main/speculative_decoding.ipynb#scrollTo=baf87589-b7fe-45dd-a6f6-9b9223581562}{Speculative Decoding for 2x Faster Whisper Inference}
+	\item \href{https://research.google/blog/looking-back-at-speculative-decoding/}{Looking back at speculative decoding}
+	\item \href{https://arxiv.org/abs/2408.15766}{Learning Harmonized Representations for Speculative Sampling}
+	\item \href{https://news.ycombinator.com/item?id=37390024}{Llama.cpp speculative sampling: 2x faster inference for large models}
+	\item \href{https://news.ycombinator.com/item?id=37357783}{Speculative: PoC for speeding-up inference via speculative sampling by ggerganov}
+	\item \href{https://saibo-creator.github.io/post/2024_03_08_speculative_sampling/}{Speculative Sampling Explained}
+	\item \href{https://github.com/ggml-org/llama.cpp/issues/2030}{llama.cpp: add example for speculative sampling \#2030}
+	\item \href{https://github.com/ggml-org/llama.cpp/pull/2926}{llama.cpp: PoC for speeding-up inference via speculative sampling \#2926}
+	\item \href{https://github.com/ollama/ollama/issues/5800}{ollama: Enable speculative decoding \#5800}
+	\item \href{https://ralphmao.github.io/ML-software-system/}{Understanding LLM System with 3-layer Abstraction}
+	\item \href{https://huggingface.co/blog/whisper-speculative-decoding}{Speculative Decoding for 2x Faster Whisper Inference}
+	\item \href{https://arxiv.org/abs/2211.17192}{Fast Inference from Transformers via Speculative Decoding}
 \end{enumerate}
 
 \end{document}
