@@ -3,13 +3,12 @@
 <!--toc:start-->
 - [Speculative Sampling](#speculative-sampling)
   - [Intro](#intro)
+  - [Wikipedia entry for Speculative Decoding](#wikipedia-entry-for-speculative-decoding)
     - [How Speculative Sampling works in general](#how-speculative-sampling-works-in-general)
   - [Concrete Directions](#concrete-directions)
     - [Adaptive Draft Length for llama.cpp](#adaptive-draft-length-for-llamacpp)
     - [Tree-Structured Drafting in llama.cpp](#tree-structured-drafting-in-llamacpp)
     - [Heterogeneous CPU/GPU Scheduling for Edge](#heterogeneous-cpugpu-scheduling-for-edge)
-    - [EAGLE-3 Support in llama.cpp](#eagle-3-support-in-llamacpp)
-    - [Energy-Aware Speculative Decoding](#energy-aware-speculative-decoding)
     - [Relative Papers](#relative-papers)
   - [Accelerating Large Language Model Decoding with Speculative Sampling](#accelerating-large-language-model-decoding-with-speculative-sampling)
     - [The problem](#the-problem)
@@ -28,17 +27,43 @@
     - [Reward-Guided Speculative Decoding (RSD)](#reward-guided-speculative-decoding-rsd)
   - [Speculative Speculative Decoding (SSD)](#speculative-speculative-decoding-ssd)
     - [Key takeaways](#key-takeaways-3)
+  - [Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](#compiler-assisted-speculative-sampling-for-accelerated-llm-inference-on-heterogeneous-edge-devices)
+    - [Key takeaways](#key-takeaways-4)
+  - [Adaptive Draft length (see: AdaEDL, SpecDec++)](#adaptive-draft-length-see-adaedl-specdec)
+    - [Profile-Guided Optimization for Speculative Decoding](#profile-guided-optimization-for-speculative-decoding)
+  - [Trace-Based Speculation](#trace-based-speculation)
+    - [Lightweight JIT for token prediction that runs alongside the draft model](#lightweight-jit-for-token-prediction-that-runs-alongside-the-draft-model)
   - [Resources](#resources)
 - [Footnote](#footnote)
-- [vim: nonu cole=3](#vim-nonu-cole3)
 <!--toc:end-->
 
-> This research addresses the inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, profile-guided optimization, instruction scheduling) to minimize both latency and energy usage. These parallels arise from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a sequence or graph to optimize ([Abstract Syntax Tree](https://en.wikipedia.org/wiki/abstract_syntax_tree)). Previous research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired optimizations could yield even greater improvements, especially for edge cases like long sequences or low-acceptance-rate drafts.
+> Η εργασία αυτή μελετά την τεχνική speculative sampling, με σκοπό την επιλογή ενός μικρού γλωσσικού μοντέλου (SLM) αντί ενός μεγάλου (LLM), όταν το SLM μπορεί να αποδώσει εξίσου καλά, ενεργοποιώντας το LLM μόνο όταν κρίνεται απαραίτητο.
+> 
+> Θα διεξαχθούν πειράματα για τη σύγκριση διαφορετικών προσεγγίσεων, με μετρήσεις χρόνου απόκρισης και κατανάλωσης ενέργειας σε σχέση με τα αρχικά μεγάλα μοντέλα.
+> 
+> Ιδιαίτερη έμφαση θα δοθεί (α) στην επιλογή των κατάλληλων μοντέλων και (β) στην επίδρασή τους στην ακρίβεια και στην αποδοτικότητα των αποτελεσμάτων.
+
+> This research addresses the inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, profile-guided optimization, instruction scheduling) to minimize both latency and energy usage.
+> 
+> These parallels arise from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a sequence or graph to optimize ([Abstract Syntax Tree](https://en.wikipedia.org/wiki/abstract_syntax_tree)).
+> 
+> Previous research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired optimizations could yield even greater improvements, especially for edge cases like long sequences or low-acceptance-rate drafts.
 
 ## Intro
-Speculative decoding provides speedups when the draft model is fast and accurate enough that most speculative tokens are accepted. On GPU this works well because the cost of evaluating multiple tokens in parallel is low.
+* Speculative decoding provides speedups when the draft model is fast and accurate enough that most speculative tokens are accepted. 
+* On GPU this works well because the cost of evaluating multiple tokens in parallel is low.
+* On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
+* Speculative decoding essentially in LLMs **is** speculative execution in CPUs.
 
-On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
+## Wikipedia entry for Speculative Decoding
+> [!TIP]
+>
+> [Source](https://en.wikipedia.org/wiki/Transformer_(deep_learning)#Speculative_decoding)
+
+* Speculative decoding is a method to accelerate token decoding.
+* Similarly to speculative execution in CPUs, future tokens are computed quickly, then verified.
+* If the quickly computed tokens are incorrect, they are discarded and computed slowly.
+* The key factor in speculative decoding is that a transformer decoder can verify faster than it can decode, in the following sense. 
 
 ### How Speculative Sampling works in general
 *from: [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](#resources-reward-guided-speculative-decoding-for-efficient-llm-reasoning)*
@@ -56,16 +81,16 @@ Speculative sampling only helps if:
 * Draft acceptance rate is high enough (ideally >60%)
 
 In simple terms:
-1. The small model proposes several next tokens (a "draft" sequence).
-2. The large model verifies them in parallel.
-3. If the proposals are likely under the large model, they are accepted, saving time because the large model doesn't need to compute them token-by-token
+* The small model proposes several next tokens (a "draft" sequence).
+* The large model verifies them in parallel.
+* If the proposals are likely under the large model, they are accepted, saving time because the large model doesn't need to compute them token-by-token
 
 In other words:
-1. The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
-2. For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. See: [Branch predictor](https://en.wikipedia.org/wiki/Branch_predictor)
-3. Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
-4. Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common sub expression elimination on token probabilities) to optimize the tree exploration.
-5. Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
+* The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
+* For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. See: [Branch predictor](https://en.wikipedia.org/wiki/Branch_predictor)
+* Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
+* Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common sub expression elimination on token probabilities) to optimize the tree exploration.
+* Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
 
 These are soft-max probabilities over the vocabulary, the same kind of probabilities used during standard next-token sampling in an LLM.
 
@@ -73,45 +98,31 @@ These are soft-max probabilities over the vocabulary, the same kind of probabili
 
 ### Adaptive Draft Length for llama.cpp
 
-llama.cpp uses **fixed** `--draft-max` and `--draft-min` parameters. This is a known weakness. The optimal draft length depends on context difficulty -- easy tokens (boilerplate, code patterns) should draft long, hard tokens (reasoning, rare words) should draft short or not at all.
+llama.cpp uses **fixed** `--draft-max` and `--draft-min` parameters. The optimal draft length depends on context difficulty.
+> Easy tokens (boilerplate, code patterns) should draft long, hard tokens (reasoning, rare words) should draft short or not at all.
 
-* Implement an entropy-based or lightweight prediction-head approach (inspired by [SpecDec++](https://arxiv.org/abs/2405.19715) or [AdaEDL](https://proceedings.mlr.press/v262/agrawal24a.html)) directly in llama.cpp's speculative pipeline. AdaEDL is particularly attractive because it's **training-free** -- it uses an entropy-based lower bound on acceptance probability to decide when to stop drafting. This means you don't need to train anything, just instrument the existing draft loop.
+* Implement an entropy-based or lightweight prediction-head approach (inspired by [SpecDec++](https://arxiv.org/abs/2405.19715) or [AdaEDL](https://proceedings.mlr.press/v262/agrawal24a.html)) directly in llama.cpp's speculative pipeline. AdaEDL is particularly attractive because it's **training-free**
+
+* It uses an entropy-based lower bound on acceptance probability to decide when to stop drafting. This means we don't need to train anything, just instrument the existing draft loop.
 
 * 10-57% improvement over static draft lengths according to the AdaEDL paper.
 
-* This is **profile-guided optimization** -- you're using runtime statistics (token entropy) to make scheduling decisions, exactly like a PGO-enabled compiler uses branch frequency data.
+* This is **profile-guided optimization**, using runtime statistics (token entropy) to make scheduling decisions, exactly like a PGO-enabled compiler uses branch frequency data.
 
 ### Tree-Structured Drafting in llama.cpp
 
-llama.cpp currently does **linear** speculative drafting -- one sequence of draft tokens. Research shows that **tree-structured** drafting (where you branch at uncertain positions) dramatically improves acceptance rates. [TALON](https://arxiv.org/abs/2601.07353) achieves up to 5.16x speedup by adaptively constructing deep-and-narrow trees for deterministic contexts and shallow-and-wide trees for uncertain ones.
+llama.cpp currently does **linear** speculative drafting (one sequence of draft tokens). Research shows that **tree-structured** drafting (where you branch at uncertain positions) dramatically improves acceptance rates. [TALON](https://arxiv.org/abs/2601.07353) achieves up to 5.16x speedup by adaptively constructing deep-and-narrow trees for deterministic contexts and shallow-and-wide trees for uncertain ones.
 
-* Implement a basic tree-structured draft in llama.cpp with adaptive branching. The key challenge is implementing **tree attention** for verification efficiently in GGML (llama.cpp's tensor library). This is non-trivial but it's exactly the kind of systems work that makes a strong ECE thesis.
+* Implement a basic tree-structured draft in llama.cpp with adaptive branching. The key challenge is implementing **tree attention** for verification efficiently in GGML (llama.cpp's tensor library).
 
-* This is **speculative execution with branch fan-out** -- instead of predicting one path, you execute multiple paths and discard the wrong ones, just like a superscalar processor.
+* This is **speculative execution with branch fan-out**. Instead of predicting one path, we execute multiple paths and discard the wrong ones, just like a superscalar processor.
 
 ### Heterogeneous CPU/GPU Scheduling for Edge
 
-There's a very recent paper (February 2026) -- [Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060) -- that does exactly what the thesis introduction describes: using compiler-style cost models to partition draft/target model execution across CPU and GPU on edge SoCs. They got 1.68x speedup on ARM Cortex-A + Mali GPU.
+There's a very recent paper (February 2026) ([Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060)) that does exactly what the thesis introduction describes: using compiler-style cost models to partition draft/target model execution across CPU and GPU on edge SoCs. They got 1.68x speedup on ARM Cortex-A + Mali GPU.
 
-* Build an analytical cost model for llama.cpp that decides at runtime whether to use speculative decoding at all, and if so, how to partition work across available compute (CPU threads, GPU if available, even NPU on newer hardware). llama.cpp already supports hybrid CPU/GPU execution via layer offloading -- we'd extend this with speculation-aware scheduling.
-
-* This is underexplored. Most speculative decoding research assumes beefy GPUs. The edge/CPU story is wide open.
-
-### EAGLE-3 Support in llama.cpp
-
-llama.cpp **does not support EAGLE models** ([issue #15305](https://github.com/ggml-org/llama.cpp/issues/15305)). vLLM, TRT-LLM, and SGLang all do. EAGLE-3 delivers 2-2.5x speedup over autoregressive decoding. This is the single most requested speculative decoding feature in the llama.cpp community.
-
-* Implement EAGLE-3 model loading and inference in llama.cpp. This requires understanding the EAGLE architecture (a lightweight draft head that reuses the target model's hidden states as features) and integrating it into GGML's graph execution.
-
-* This would likely be merged upstream and would be your most visible open-source contribution. It's also a natural comparison point for your thesis experiments.
-
-### Energy-Aware Speculative Decoding
-
-Your abstract mentions energy consumption, which almost nobody benchmarks rigorously. Most papers only report tokens/second or latency.
-
-* Instrument llama.cpp to measure actual energy consumption (via RAPL on Intel, or power sensors on ARM) under different speculative decoding configurations. Then build a scheduler that optimizes for an **energy-latency Pareto frontier** rather than pure speed. Sometimes the fastest configuration wastes energy on rejected drafts -- a smarter policy might accept slightly higher latency for significantly lower energy.
-
-* Edge deployment, battery-powered devices, sustainability arguments. This is a differentiator that no other speculative decoding paper does well.
+* Build an analytical cost model for llama.cpp that decides at runtime whether to use speculative decoding at all, and if so, how to partition work across available compute (CPU threads, GPU if available, even NPU on newer hardware).
+> llama.cpp already supports hybrid CPU/GPU execution via layer offloading -> extend this with speculation-aware scheduling.
 
 ### Relative Papers
 
@@ -123,7 +134,9 @@ Your abstract mentions energy consumption, which almost nobody benchmarks rigoro
 
 ## Accelerating Large Language Model Decoding with Speculative Sampling
 > [!TIP]
+>
 > auto-regressive sampling vs speculative sampling
+>
 > [Source](#resources-accelerating-large-language-model-decoding-with-speculative-sampling) 
 
 ### The problem
@@ -151,7 +164,9 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 ## A Hitchhiker's Guide to Speculative Decoding
 > [!TIP]
+>
 > By Team PyTorch. May 2, 2024
+>
 > [Source](#resources-a-hitchhikers-guide-to-speculative-decoding)
 
 ### Key takeaways
@@ -163,12 +178,16 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 ## Speculative Sampling Explained
 > [!TIP]
+>
 > Use a draft sampling to achieve the same sampling result as the target sampling
+>
 > [Source](#resources-speculative-sampling-explained)
 
 ## Fast Inference from Transformers via Speculative Decoding
 > [!TIP]
+>
 > Inference from large autoregressive models like Transformers is slow - decoding K tokens takes K serial runs of the model
+>
 > [Source](#resources-fast-inference-from-transformers-via-speculative-decoding)
 
 ### Key takeaways
@@ -185,7 +204,9 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 ## Reward-Guided Speculative Decoding for Efficient LLM Reasoning
 > [!TIP]
+>
 > Unlike normal speculative sampling we incorporate controlled bias to prioritize high-reward outputs.
+>
 > [Source](#resources-reward-guided-speculative-decoding-for-efficient-llm-reasoning)
 
 ### Key takeaways
@@ -204,13 +225,81 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 ## Speculative Speculative Decoding (SSD)
 > [!TIP]
+>
 > Speculative Decoding relies on a sequential dependence between speculation and verification, so we parallelize these operations.
+>
 > [Source](#resources-speculative-speculative-decoding)
 
 ### Key takeaways
 1. While a verification is ongoing, the draft model *predicts* likely verification outcomes and prepares speculations pre-emptively for them.
 2. If the actual verification outcome is then in the predicted set, a speculation can be returned immediately, eliminating drafting overhead entirely.
 3. The result is SAGUARO, an optimized SSD algorithm.
+
+## Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices
+> [!TIP]
+>
+> When speculative sampling and heterogeneous execution are jointly beneficial and is validated on an edge devic
+>
+> [Source](#compiler-assisted-speculative-sampling-for-accelerated-llm-inference-on-heterogeneous-edge-devices)
+
+### Key takeaways
+1. SD at the edge is hindered by two major challenges:
+    * Integrating SD into a compiler-based workflow without sacrificing performance or programmability
+    * Exploiting the heterogeneous compute resources of modern SoCs through carefully designed partitioning strategies
+2. Use an analytical cost model that explores heterogeneous hardware configurations and guides coarse-grained partitioning of LLM subgraphs, particularly with edge-typical short input sequence lengths.
+
+## Adaptive Draft length (see: AdaEDL, SpecDec++)
+### Profile-Guided Optimization for Speculative Decoding
+
+1. PGO is a compiler technique:
+    * instrument code,
+    * run it on representative inputs,
+    * collect profiles,
+    * recompile with the profile data to make better decisions.
+
+2. AdaEDL, SpecDec++ don't use PGO, they use online heuristics.
+
+> **This is not machine learning.**
+>
+> We are not training a neural network. We are collecting execution profiles and using them to parameterize a policy
+>
+> Exactly what GCC's `-fprofile-generate` / `-fprofile-use` does. It's a compiler technique applied to a new domain.
+
+1. Instrumentation
+    * Run the draft+target model pair on representative inputs. At each speculative step, log:
+        - The draft model's entropy/confidence at each position
+        - Whether the token was accepted or rejected
+        - The context features (token type, position in sequence, preceding pattern)
+
+2. Profile analysis
+    * From the collected data:
+        - build a lightweight predictor that maps context features to expected acceptance probability.
+    * This is analogous to a compiler's branch prediction profile (at this call site, the branch is taken 94% of the time)
+
+3. Optimized policy generation
+    * Use the profile to generate a speculation policy:
+        - High expected acceptance → draft long (like a predicted-taken branch)
+        - Low expected acceptance → draft short or skip (like a predicted-not-taken branch)
+        - Very uncertain → branch (tree-structured draft, like a superscalar processor exploring both paths)
+
+## Trace-Based Speculation
+### Lightweight JIT for token prediction that runs alongside the draft model
+
+> **trace-based compilation for speculative decoding.**
+
+In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequently executed paths through the program) and compiles them to optimized native code. Cold paths fall back to the interpreter.
+
+1. Apply this to speculative decoding:
+    * Record frequently occurring token generation patterns (e.g., "after generating `def`, the next tokens are almost always `function_name(args):`")
+    * For these "hot traces," use aggressive speculation (long drafts, high confidence)
+    * For "cold" / unfamiliar patterns, fall back to conservative speculation or no speculation
+    * The "traces" could be stored as n-gram patterns, trie structures, or even finite automata
+
+## TODO
+* Eagle-3 Speculative Decoding the SOTA algorithm for speculative decoding
+  * https://github.com/ggml-org/llama.cpp/discussions/15902
+  * https://github.com/ggml-org/llama.cpp/pull/18039
+  * https://github.com/ggml-org/llama.cpp/pull/18471
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
@@ -238,8 +327,7 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 23. <span id="resources-reward-guided-speculative-decoding-for-efficient-llm-reasoning"></span> [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](https://arxiv.org/abs/2501.19324)
 24. <span id="resources-speculative-speculative-decoding"></span> [Speculative Speculative Decoding](https://arxiv.org/pdf/2603.03251)
 25. <span id="talon-confidence-aware-speculative-decoding-with-adaptive-token-trees"></span>[TALON: Confidence-Aware Speculative Decoding with Adaptive Token Trees](https://arxiv.org/abs/2601.07353)
+26. <span id="compiler-assisted-speculative-sampling-for-accelerated-llm-inference-on-heterogeneous-edge-devices"></span>[Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](https://arxiv.org/pdf/2602.08060)
 
 # Footnote
 1. `logit(p) = log(p/(1-p))` is the raw, denormalized predictions generated by a model before applying any activation function
-
-# vim: nonu cole=3
