@@ -131,6 +131,10 @@ There's a very recent paper (February 2026) ([Compiler-Assisted Speculative Samp
 - [Compiler-Assisted Speculative Sampling on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060)
 - [Efficient Speculative Decoding for Llama at Scale](https://arxiv.org/abs/2508.08192)
 - [Speculative Speculative Decoding (Saguaro)](https://arxiv.org/abs/2603.03251)
+- Eagle-3 Speculative Decoding the SOTA algorithm for speculative decoding
+    - https://github.com/ggml-org/llama.cpp/discussions/15902
+    - https://github.com/ggml-org/llama.cpp/pull/18039
+    - https://github.com/ggml-org/llama.cpp/pull/18471
 
 ## Accelerating Large Language Model Decoding with Speculative Sampling
 > [!TIP]
@@ -294,12 +298,6 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
     * For these "hot traces," use aggressive speculation (long drafts, high confidence)
     * For "cold" / unfamiliar patterns, fall back to conservative speculation or no speculation
     * The "traces" could be stored as n-gram patterns, trie structures, or even finite automata
-
-## TODO
-* Eagle-3 Speculative Decoding the SOTA algorithm for speculative decoding
-  * https://github.com/ggml-org/llama.cpp/discussions/15902
-  * https://github.com/ggml-org/llama.cpp/pull/18039
-  * https://github.com/ggml-org/llama.cpp/pull/18471
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
