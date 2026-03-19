@@ -1,0 +1,10 @@
+Diagnostics:
+  Suppress:
+    - "gnu-zero-variadic-macro-arguments"
+    - "c23-extensions"
+    - "unused-function"
+    - "macro-redefined"
+    - "sometimes-uninitialized"
+  ClangTidy:
+    Remove: bugprone-sizeof-expression
+  UnusedIncludes: None
