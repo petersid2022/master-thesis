@@ -37,16 +37,21 @@ inline void print(LogLevel level, std::string_view fmt, Args &&...args)
 
 static inline void print_usage(char **argv)
 {
-  print(LogLevel::WARNING, "Usage: {} -m model.gguf [OPTIONS]", argv[0]);
+  const char *name = argv[0];
+
+  print(LogLevel::WARNING, "Usage: {} -m model.gguf [OPTIONS]", name);
   print(LogLevel::WARNING, "");
   print(LogLevel::WARNING, "Options:");
-  print(LogLevel::WARNING, "    -m,   --model <file>        gguf model file (required)");
-  print(LogLevel::WARNING, "    -p,   --prompt <text>       initial prompt");
-  print(LogLevel::WARNING, "    -ctx, --ctx-size <n>        context size in tokens");
-  print(LogLevel::WARNING, "    -ngl, --n-gpu-layers <n>    the number of layers to store in VRAM (<0 means all layers)");
+  print(LogLevel::WARNING, "  -m,   --model <file>        gguf model file (required)");
+  print(LogLevel::WARNING, "  -p,   --prompt <text>       initial prompt (default: \"How old is the universe?\")");
+  print(LogLevel::WARNING, "  -t,   --temp <n>            temperature (default: {})", 0.8f);
+  print(LogLevel::WARNING, "  -p,   --top-p <n>           top-p sampling (default: {})", 0.8f);
+  print(LogLevel::WARNING, "  -k,   --top-k <n>           top-k sampling (default: {})", 40);
+  print(LogLevel::WARNING, "  -ctx, --ctx-size <n>        context size in tokens (0 = from model) (default: {})", 2048);
+  print(LogLevel::WARNING, "  -ngl, --n-gpu-layers <n>    layers in VRAM (<0 = all) (default: {})", 2048);
   print(LogLevel::WARNING, "");
   print(LogLevel::WARNING, "Example:");
-  print(LogLevel::WARNING, "  {} -m Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -p \"Tell me a joke\" -c 8192 -ngl 40", argv[0]);
+  print(LogLevel::WARNING, "  {} -m Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -p \"Tell me a joke\" -ctx 8192 -ngl 40", name);
 }
 
 struct Config
@@ -62,8 +67,8 @@ struct Config
   float p = 0.95f;
   int32_t k = 40;
 
+  std::string model_path;
   std::string prompt = "How old is the universe?";
-  std::string model_path = "../../models/Nemotron-3-Nano-4B-Q8_0.gguf";
 };
 
 struct Spectre
