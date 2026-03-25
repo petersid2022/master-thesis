@@ -1,57 +1,52 @@
 #include <cmath>
-#include <cstdarg>
 #include <cstring>
-#include <ctime>
+#include <format>
 #include <fstream>
-#include <string>
+#include <iostream>
 #include <vector>
 
 #include "llama-cpp.h"
 
-typedef enum
+enum class LogLevel
 {
   INFO,
   ERROR,
-  WARNING,
-} log_level;
+  WARNING
+};
 
-static inline void print(log_level level, const char *fmt, ...)
+template <typename... Args>
+inline void print(LogLevel level, std::string_view fmt, Args &&...args)
 {
-  va_list args;
-  va_start(args, fmt);
+  auto message = std::vformat(fmt, std::make_format_args(args...));
 
   switch (level)
   {
-  case INFO:
-    fprintf(stderr, "\x1b[36m[INFO]\x1b[0m ");
+  case LogLevel::INFO:
+    std::cout << "\x1b[36m[INFO]\x1b[0m ";
     break;
-  case WARNING:
-    fprintf(stderr, "\x1b[33m[WARNING]\x1b[0m ");
+  case LogLevel::WARNING:
+    std::cout << "\x1b[33m[WARNING]\x1b[0m ";
     break;
-  case ERROR:
-    fprintf(stderr, "\x1b[31m[ERROR]\x1b[0m ");
+  case LogLevel::ERROR:
+    std::cout << "\x1b[31m[ERROR]\x1b[0m ";
     break;
-  default:
-    abort();
   }
 
-  vfprintf(stderr, fmt, args);
-  fprintf(stderr, "\n");
-  va_end(args);
+  std::cout << message << '\n';
 }
 
 static inline void print_usage(char **argv)
 {
-  print(WARNING, "Usage: %s -m model.gguf [OPTIONS]", argv[0]);
-  print(WARNING, "");
-  print(WARNING, "Options:");
-  print(WARNING, "    -m,   --model <file>        gguf model file (required)");
-  print(WARNING, "    -p,   --prompt <text>       initial prompt");
-  print(WARNING, "    -ctx, --ctx-size <n>        context size in tokens");
-  print(WARNING, "    -ngl, --n-gpu-layers <n>    the number of layers to store in VRAM (<0 means all layers)");
-  print(WARNING, "");
-  print(WARNING, "Example:");
-  print(WARNING, "  %s -m Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -p \"Tell me a joke\" -c 8192 -ngl 40", argv[0]);
+  print(LogLevel::WARNING, "Usage: {} -m model.gguf [OPTIONS]", argv[0]);
+  print(LogLevel::WARNING, "");
+  print(LogLevel::WARNING, "Options:");
+  print(LogLevel::WARNING, "    -m,   --model <file>        gguf model file (required)");
+  print(LogLevel::WARNING, "    -p,   --prompt <text>       initial prompt");
+  print(LogLevel::WARNING, "    -ctx, --ctx-size <n>        context size in tokens");
+  print(LogLevel::WARNING, "    -ngl, --n-gpu-layers <n>    the number of layers to store in VRAM (<0 means all layers)");
+  print(LogLevel::WARNING, "");
+  print(LogLevel::WARNING, "Example:");
+  print(LogLevel::WARNING, "  {} -m Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -p \"Tell me a joke\" -c 8192 -ngl 40", argv[0]);
 }
 
 struct Config
@@ -59,7 +54,7 @@ struct Config
   int32_t ngl = 2048; // the number of layers to store in VRAM (<0 means all layers)
   int32_t ctx = 2048; // text context, 0 = from model
 
-  // Updates logit_i` = logit_i / temp.
+  // Updates logit_i' = logit_i / temp.
   // When temp <= 0.0f, the maximum logit is kept at it's original value, the rest are set to -inf
   float temp = 0.8f;
 
@@ -163,7 +158,7 @@ int main(int argc, char **argv)
     }
     catch (const std::exception &e)
     {
-      print(ERROR, e.what());
+      print(LogLevel::ERROR, e.what());
       print_usage(argv);
       return 1;
     }
@@ -180,10 +175,10 @@ int main(int argc, char **argv)
   // --------------------------------------------------
   llama_backend_init();
 
-  print(INFO, "llama_print_system_info:       %s", llama_print_system_info());
-  print(INFO, "llama_supports_mmap:           %d", llama_supports_mmap());
-  print(INFO, "llama_supports_mlock:          %d", llama_supports_mlock());
-  print(INFO, "llama_supports_gpu_offload:    %d", llama_supports_gpu_offload());
+  print(LogLevel::INFO, "llama_print_system_info:       {}", llama_print_system_info());
+  print(LogLevel::INFO, "llama_supports_mmap:           {}", llama_supports_mmap());
+  print(LogLevel::INFO, "llama_supports_mlock:          {}", llama_supports_mlock());
+  print(LogLevel::INFO, "llama_supports_gpu_offload:    {}", llama_supports_gpu_offload());
 
   struct llama_model_params params = llama_model_default_params();
   ggml_backend_dev_t device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
@@ -195,11 +190,11 @@ int main(int argc, char **argv)
 
   if (!(spectre.model = llama_model_load_from_file(spectre.config.model_path.c_str(), params)))
   {
-    print(ERROR, "failed to load model");
+    print(LogLevel::ERROR, "failed to load model");
     return 1;
   }
 
-  print(INFO, "llama_model_n_params:    %d", -llama_model_n_params(spectre.model));
+  print(LogLevel::INFO, "llama_model_n_params:    {}", -llama_model_n_params(spectre.model));
 
   // --------------------------------------------------
   // Tokenizer
@@ -212,11 +207,11 @@ int main(int argc, char **argv)
 
   if (llama_tokenize(vocab, spectre.config.prompt.c_str(), spectre.config.prompt.size(), tokens.data(), tokens.size(), true, true) < 0)
   {
-    print(ERROR, "failed to tokenize prompt");
+    print(LogLevel::ERROR, "failed to tokenize prompt");
     return 1;
   }
 
-  print(INFO, "\"%s\" (%d tokens)", spectre.config.prompt.c_str(), n_prompt);
+  print(LogLevel::INFO, "\"{}\" ({} tokens)", spectre.config.prompt.c_str(), n_prompt);
 
   for (auto id : tokens)
   {
@@ -224,14 +219,14 @@ int main(int argc, char **argv)
     int n = llama_token_to_piece(vocab, id, token, sizeof(token), 0, true);
     if (n < 0)
     {
-      print(ERROR, "failed to convert token to piece");
+      print(LogLevel::ERROR, "failed to convert token to piece");
       return 1;
     }
-    print(INFO, "|%.*s|", n, token);
+    print(LogLevel::INFO, "|{:.{}s}|", token, n);
   }
 
-  print(INFO, "llama_vocab_n_tokens:    %d", llama_vocab_n_tokens(vocab));
-  print(INFO, "llama_vocab_type:        %d", llama_vocab_type(vocab));
+  print(LogLevel::INFO, "llama_vocab_n_tokens:    {}", llama_vocab_n_tokens(vocab));
+  print(LogLevel::INFO, "llama_vocab_type:        {}", (int)llama_vocab_type(vocab));
 
   // --------------------------------------------------
   // Context
@@ -244,15 +239,15 @@ int main(int argc, char **argv)
 
   if (!(spectre.context = llama_init_from_model(spectre.model, ctx_params)))
   {
-    print(ERROR, "failed to create the llama_context");
+    print(LogLevel::ERROR, "failed to create the llama_context");
     return 1;
   }
 
-  print(INFO, "llama_n_ctx:        %d", llama_n_ctx(spectre.context));
-  print(INFO, "llama_n_ctx_seq:    %d", llama_n_ctx_seq(spectre.context));
-  print(INFO, "llama_n_batch:      %d", llama_n_batch(spectre.context));
-  print(INFO, "llama_n_ubatch:     %d", llama_n_ubatch(spectre.context));
-  print(INFO, "llama_n_seq_max:    %d", llama_n_seq_max(spectre.context));
+  print(LogLevel::INFO, "llama_n_ctx:        {}", llama_n_ctx(spectre.context));
+  print(LogLevel::INFO, "llama_n_ctx_seq:    {}", llama_n_ctx_seq(spectre.context));
+  print(LogLevel::INFO, "llama_n_batch:      {}", llama_n_batch(spectre.context));
+  print(LogLevel::INFO, "llama_n_ubatch:     {}", llama_n_ubatch(spectre.context));
+  print(LogLevel::INFO, "llama_n_seq_max:    {}", llama_n_seq_max(spectre.context));
 
   // --------------------------------------------------
   // Sampler
@@ -263,7 +258,7 @@ int main(int argc, char **argv)
 
   if (!(spectre.sampler = llama_sampler_chain_init(sparams)))
   {
-    print(ERROR, "failed to create the llama_sampler_chain_params");
+    print(LogLevel::ERROR, "failed to create the llama_sampler_chain_params");
     return 1;
   }
 
@@ -279,7 +274,7 @@ int main(int argc, char **argv)
   {
     if (llama_encode(spectre.context, batch))
     {
-      print(ERROR, "failed to eval");
+      print(LogLevel::ERROR, "failed to eval");
       return 1;
     }
 
@@ -296,16 +291,18 @@ int main(int argc, char **argv)
   std::size_t decoded_tokens = 0;
   const int64_t start = ggml_time_us();
 
-  print(INFO, "llama_model_chat_template:    \n%s", llama_model_chat_template(spectre.model, NULL));
+  print(LogLevel::INFO, "llama_model_chat_template:    \n{}", llama_model_chat_template(spectre.model, NULL));
 
   std::ofstream file("metrics.csv");
   if (!file)
   {
-    print(ERROR, "failed to open file");
+    print(LogLevel::ERROR, "failed to open file");
     return 1;
   }
 
   file << "step,logit,prob,logprob\n";
+
+  print(LogLevel::INFO, "--------------------------------------------------");
 
   // --------------------------------------------------
   // Main loop
@@ -315,7 +312,7 @@ int main(int argc, char **argv)
     // evaluate the current batch with the transformer model
     if (llama_decode(spectre.context, batch))
     {
-      print(ERROR, "failed to eval, return code %d", 1);
+      print(LogLevel::ERROR, "failed to eval, return code {}", 1);
       return 1;
     }
 
@@ -356,7 +353,7 @@ int main(int argc, char **argv)
     int n = llama_token_to_piece(vocab, cursor, token, sizeof(token), 0, true);
     if (n < 0)
     {
-      print(ERROR, "failed to convert token to piece");
+      print(LogLevel::ERROR, "failed to convert token to piece");
       return 1;
     }
     printf("%.*s", n, token);
@@ -368,11 +365,12 @@ int main(int argc, char **argv)
     decoded_tokens += 1;
   }
 
-  const int64_t end = ggml_time_us();
-
   printf("\n");
 
-  print(INFO, "decoded %zu tokens in %.2f s, speed: %.2f t/s",
+  const int64_t end = ggml_time_us();
+
+  print(LogLevel::INFO, "--------------------------------------------------");
+  print(LogLevel::INFO, "decoded {} tokens in {} s, speed: {} t/s",
         decoded_tokens, (end - start) / 1000000.0f,
         decoded_tokens / ((end - start) / 1000000.0f));
 
