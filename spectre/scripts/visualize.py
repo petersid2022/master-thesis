@@ -42,6 +42,7 @@ def parse_names(text: str | None) -> list[str] | None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=Path)
+    parser.add_argument("--output", type=Path, default=Path("metrics.png"), help="where to save the generated png")
     parser.add_argument("--show", default="logit", help="logit, prob, logprob, or all")
     parser.add_argument("--heatmap", action="store_true", help="plot selected y columns as a heatmap")
     args = parser.parse_args()
@@ -85,7 +86,7 @@ def main() -> None:
             ax.legend()
 
     fig.tight_layout()
-    fig.savefig("metrics.png", dpi=150)
+    fig.savefig(args.output, dpi=150)
 
 
 if __name__ == "__main__":
