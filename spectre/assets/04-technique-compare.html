@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Technique comparison</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #14161c;
+      --card: #1c2029;
+      --line: #2e3440;
+      --g1: #88c0d0;
+      --g2: #b48ead;
+      --g3: #ebcb8b;
+      --g4: #a3be8c;
+      --text: #eceff4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      font-family: Manrope, system-ui, sans-serif;
+      display: grid; place-items: center; padding: 1.5rem;
+    }
+    .slide { width: min(1080px, 100%); }
+    h1 { font-size: 1.35rem; margin: 0 0 0.25rem; font-weight: 700; }
+    .sub { font-size: 0.8rem; opacity: 0.6; margin-bottom: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th, td { padding: 0.65rem 0.75rem; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-family: "JetBrains Mono", monospace; font-weight: 600; color: var(--g1); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.65rem; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .pill { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; font-family: "JetBrains Mono", monospace; font-size: 0.62rem; font-weight: 600; }
+    .p1 { background: rgba(136,192,208,0.15); color: var(--g1); }
+    .p2 { background: rgba(180,142,173,0.15); color: var(--g2); }
+    .p3 { background: rgba(235,203,139,0.15); color: var(--g3); }
+    .p4 { background: rgba(163,190,140,0.15); color: var(--g4); }
+    .viz { margin-top: 1.75rem; }
+    svg { width: 100%; max-height: 220px; }
+    footer { margin-top: 1rem; font-size: 0.68rem; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
+  </style>
+</head>
+<body>
+  <div class="slide">
+    <h1>Speculative variants — at a glance</h1>
+    <p class="sub">Compact reference for monthly report; refine cells with your exact definitions &amp; citations.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Idea</th>
+          <th>What drafts</th>
+          <th>Verify cost</th>
+          <th>Your angle</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="pill p1">Draft model</span></td>
+          <td>Separate small LM (or same arch, fewer params)</td>
+          <td>1 target forward over γ positions (parallel)</td>
+          <td>Spectre already loads <code style="font-size:0.9em">dft</code> + <code style="font-size:0.9em">tgt</code> — classic baseline</td>
+        </tr>
+        <tr>
+          <td><span class="pill p2">n-cache / cache-centric</span></td>
+          <td>Reuse partial computations or cached substructures</td>
+          <td>Amortized; depends on hit rate &amp; eviction</td>
+          <td>Interesting vs KV-only: where redundancy lives in your workload</td>
+        </tr>
+        <tr>
+          <td><span class="pill p3">Speculative²</span></td>
+          <td>Second-level speculator (e.g. tiny head proposes branches)</td>
+          <td>Nested acceptance; more bookkeeping</td>
+          <td>Research direction — diagram as stacked pipelines</td>
+        </tr>
+        <tr>
+          <td><span class="pill p4">Eagle-style</span></td>
+          <td>Learned draft with target hidden-state access</td>
+          <td>Tree verify — batch expands with breadth</td>
+          <td>Compare to “dumb” draft once Spectre baseline works</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="viz">
+      <svg viewBox="0 0 960 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <text x="30" y="28" fill="#88c0d0" font-family="JetBrains Mono" font-size="11">relative complexity →</text>
+        <rect x="30" y="45" width="140" height="28" rx="4" fill="rgba(136,192,208,0.2)" stroke="#88c0d0"/>
+        <rect x="200" y="45" width="200" height="28" rx="4" fill="rgba(180,142,173,0.2)" stroke="#b48ead"/>
+        <rect x="430" y="45" width="260" height="28" rx="4" fill="rgba(235,203,139,0.2)" stroke="#ebcb8b"/>
+        <rect x="720" y="45" width="210" height="28" rx="4" fill="rgba(163,190,140,0.2)" stroke="#a3be8c"/>
+        <text x="100" y="64" text-anchor="middle" fill="#eceff4" font-family="Manrope" font-size="10">draft LM</text>
+        <text x="300" y="64" text-anchor="middle" fill="#eceff4" font-family="Manrope" font-size="10">cache / n-cache</text>
+        <text x="560" y="64" text-anchor="middle" fill="#eceff4" font-family="Manrope" font-size="10">spec²</text>
+        <text x="825" y="64" text-anchor="middle" fill="#eceff4" font-family="Manrope" font-size="10">learned + tree</text>
+        <!-- mini nested for spec^2 -->
+        <g transform="translate(480, 100)">
+          <rect x="-80" y="0" width="160" height="70" rx="6" fill="none" stroke="#ebcb8b" stroke-dasharray="4 3" opacity="0.7"/>
+          <text x="0" y="20" text-anchor="middle" fill="#ebcb8b" font-family="JetBrains Mono" font-size="9">outer spec</text>
+          <rect x="-50" y="30" width="100" height="32" rx="4" fill="rgba(235,203,139,0.12)" stroke="#ebcb8b"/>
+          <text x="0" y="49" text-anchor="middle" fill="#d8caa0" font-family="JetBrains Mono" font-size="8">inner draft</text>
+        </g>
+        <text x="480" y="190" text-anchor="middle" fill="#6b7280" font-family="Manrope" font-size="10">Spectre milestone: implement leftmost bar end-to-end in libllama first</text>
+      </svg>
+    </div>
+    <footer>llama.cpp exposes primitives you need: multi-context, batching, logits — speculative loop is orchestration above decode().</footer>
+  </div>
+</body>
+</html>
