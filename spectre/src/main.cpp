@@ -324,26 +324,29 @@ private:
       throw std::runtime_error(std::format("the prompt exceeds the batch size ({} tokens, batch {})", prompt_tgt.size(), llama_n_batch(this->ctx_tgt)));
     }
 
-    if (
-        llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
-        llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
-        llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
-        llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)) {
-      throw std::runtime_error("draft model special tokens must match target model to use speculation");
-    }
+    if (this->params.speculative_decoding_enabled()) {
 
-    {
-      const int n_vocab_tgt = llama_vocab_n_tokens(vocab_tgt);
-      const int n_vocab_dft = llama_vocab_n_tokens(vocab_dft);
-      const int vocab_diff = n_vocab_tgt > n_vocab_dft
-                                 ? n_vocab_tgt - n_vocab_dft
-                                 : n_vocab_dft - n_vocab_tgt;
+      if (
+          llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
+          llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
+          llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
+          llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)) {
+        throw std::runtime_error("draft model special tokens must match target model to use speculation");
+      }
 
-      if (vocab_diff > SPEC_VOCAB_MAX_SIZE_DIFFERENCE) {
-        throw std::runtime_error(std::format(
-            "draft model vocab must closely match target model to use speculation but "
-            "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}",
-            n_vocab_tgt, llama_vocab_n_tokens(vocab_dft), vocab_diff, SPEC_VOCAB_MAX_SIZE_DIFFERENCE));
+      {
+        const int n_vocab_tgt = llama_vocab_n_tokens(vocab_tgt);
+        const int n_vocab_dft = llama_vocab_n_tokens(vocab_dft);
+        const int vocab_diff = n_vocab_tgt > n_vocab_dft
+                                   ? n_vocab_tgt - n_vocab_dft
+                                   : n_vocab_dft - n_vocab_tgt;
+
+        if (vocab_diff > SPEC_VOCAB_MAX_SIZE_DIFFERENCE) {
+          throw std::runtime_error(std::format(
+              "draft model vocab must closely match target model to use speculation but "
+              "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}",
+              n_vocab_tgt, llama_vocab_n_tokens(vocab_dft), vocab_diff, SPEC_VOCAB_MAX_SIZE_DIFFERENCE));
+        }
       }
     }
 
@@ -490,8 +493,8 @@ private:
     llama_perf_context_print(this->ctx_tgt);
   } // }}}
 
-  // COMMON_SPECULATIVE_TYPE_DRAFT
   void draft(void) { // {{{
+    // COMMON_SPECULATIVE_TYPE_DRAFT
     // auto &batch = this->cur_batch;
     // auto &ctx_tgt = this->ctx_tgt;
     auto &ctx_dft = this->ctx_dft;
