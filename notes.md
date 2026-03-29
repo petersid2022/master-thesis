@@ -314,6 +314,41 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
     * EAGLE-{1,2,3} (the fastest, attaches a separate module to the target model's internal layers)
     * Speculative Speculative Decoding (the SOTA algorithm, while a verification is ongoing, the draft model predicts likely verification outcomes and prepares speculations pre-emptively for them)
 
+* High level overview of my implementation
+    * start()
+        * initialize();
+            * initialize libllama backend
+            * load target/draft models + CTXs
+        * tokenize();
+            * get model VOCABs
+            * tokenize prompt
+        * decode();
+            * initialize sampler/decoder (temp, top-k/p, dist) for target/draft
+            * prepare first batch of tokens (aka the prompt)
+        * run();
+            * if speculative:
+                * assert prompt -> get prompt batch
+                * evaluate the prompt batch with the transformer
+                * sample starting from the last token of the prompt
+                * while !end_of_sentence:
+                    * draft() tokens, resize if too many, reset if too few
+                    * do the actual verification of the sampled tokens
+                    * get last token
+                    * get logit of last token -> softmax to normalize
+                    * is eog:
+                        * done
+                    * else:
+                        * get token string representation
+            * else:
+                * evaluate the prompt batch with the transformer
+                * get last token
+                * get logit of last token -> softmax to normalize
+                * is eog:
+                    * done
+                * else:
+                    * get token string representation
+                    * prepare the next batch with the sampled token
+
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
 2. <span id="resources-llama-cpp-docs-speculative-md"></span> [llama.cpp: docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md)
