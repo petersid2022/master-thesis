@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -7,7 +8,7 @@
 
 #include "llama-cpp.h"
 
-#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
+#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE 128
 
 enum class LogLevel // {{{
 {
@@ -69,6 +70,13 @@ struct Parameters // {{{
   int64_t t_draft_us = 0;  // total time spent in generating drafts in this implementation in microseconds.
   int64_t t_accept_us = 0; // total time spent in accumulation of this implementation in microseconds.
 
+  int64_t n_predict = 0;
+  int64_t n_drafted = 0;
+  int64_t n_accept = 0;
+
+  // used to determine end of generation
+  bool has_eos = false;
+
   std::string dft_model_path;
   std::string tgt_model_path;
 
@@ -95,12 +103,15 @@ public:
 
   ~Application() {
     llama_sampler_free(sampler);
-    llama_free(ctx_tgt);
-    llama_model_free(model_tgt);
     if (params.speculative_decoding_enabled()) {
+      llama_sampler_free(sampler_dft);
+      llama_batch_free(batch_spec_tgt);
+      llama_batch_free(batch_spec_dft);
       llama_free(ctx_dft);
       llama_model_free(model_dft);
     }
+    llama_free(ctx_tgt);
+    llama_model_free(model_tgt);
     llama_backend_free();
   }
 
@@ -114,10 +125,14 @@ public:
 private:
   Parameters params;
 
-  llama_batch cur_batch;
+  llama_batch curr_batch;
   llama_token last_token;
 
   llama_sampler *sampler = nullptr;
+  llama_sampler *sampler_dft = nullptr;
+
+  llama_batch batch_spec_tgt{};
+  llama_batch batch_spec_dft{};
 
   llama_model *model_tgt = nullptr;
   llama_model *model_dft = nullptr;
@@ -190,14 +205,14 @@ private:
           }
         } else if (std::strcmp(argv[i], "-t") == 0 || std::strcmp(argv[i], "--temp") == 0) {
           if (i + 1 < argc) {
-            this->params.ngl = std::stoi(argv[++i]);
+            this->params.temp = std::stof(argv[++i]);
           } else {
             print_usage(argv);
-            throw std::runtime_error("Missing argument for n-gpu-layers");
+            throw std::runtime_error("Missing argument for temperature");
           }
         } else if (std::strcmp(argv[i], "-p") == 0 || std::strcmp(argv[i], "--top-p") == 0) {
           if (i + 1 < argc) {
-            this->params.top_p = std::stoi(argv[++i]);
+            this->params.top_p = std::stof(argv[++i]);
           } else {
             print_usage(argv);
             throw std::runtime_error("Missing argument for top-p");
@@ -378,42 +393,45 @@ private:
     llama_sampler_chain_add(this->sampler, llama_sampler_init_temp(this->params.temp));
     llama_sampler_chain_add(this->sampler, llama_sampler_init_dist(std::time(nullptr)));
 
+    if (this->params.speculative_decoding_enabled()) {
+      this->batch_spec_tgt = llama_batch_init(llama_n_batch(this->ctx_tgt), 0, 1);
+      this->batch_spec_dft = llama_batch_init(llama_n_batch(this->ctx_dft), 0, 1);
+      struct llama_sampler_chain_params dsp = llama_sampler_chain_default_params();
+      dsp.no_perf = false;
+      this->sampler_dft = llama_sampler_chain_init(dsp);
+      if (!this->sampler_dft) {
+        throw std::runtime_error("failed to create draft sampler chain");
+      }
+      // Fast greedy drafts on a filtered distribution (same spirit as llama.cpp speculative examples).
+      llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_top_k(this->params.top_k));
+      llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_greedy());
+    }
+
     // prepare first batch
-    cur_batch = llama_batch_get_one(prompt_tgt.data(), prompt_tgt.size());
+    curr_batch = llama_batch_get_one(prompt_tgt.data(), prompt_tgt.size());
 
     if (llama_model_has_encoder(this->model_tgt)) {
       if (this->params.speculative_decoding_enabled()) {
-        try {
-          // keep the last token separate
-          last_token = prompt_tgt.back();
-
-          // all tokens currently in the target context
-          prompt_tgt.resize(prompt_tgt.size() - 1);
-
-          // int n_past = prompt_tgt.size() - 1;
-
-          this->draft();
-        } catch (const std::exception &e) {
-          print(LogLevel::ERROR, e.what());
-          throw e;
-        }
+        print(LogLevel::WARN,
+              "Speculative decoding is not implemented for encoder–decoder models; "
+              "draft model is loaded but generation uses the target only.");
       }
-
-      if (llama_encode(this->ctx_tgt, cur_batch)) {
+      // eval the prompt
+      if (llama_encode(this->ctx_tgt, curr_batch)) {
         throw std::runtime_error("failed to eval");
       }
 
       llama_token decoder_start_token_id = llama_model_decoder_start_token(this->model_tgt);
       if (decoder_start_token_id == LLAMA_TOKEN_NULL) {
-        // decoder_start_token_id = llama_vocab_bos(this->vocab);
+        decoder_start_token_id = llama_vocab_bos(this->vocab_tgt);
       }
 
-      cur_batch = llama_batch_get_one(&decoder_start_token_id, 1);
+      curr_batch = llama_batch_get_one(&decoder_start_token_id, 1);
     }
   } // }}}
 
   void run(void) { // {{{
-    llama_token current_token;
+    llama_token current_token = LLAMA_TOKEN_NULL;
     std::size_t tokens_decoded = 0;
     const int64_t start = ggml_time_us();
 
@@ -428,9 +446,138 @@ private:
 
     print(LogLevel::INFO, "--------------------------------------------------");
 
+    if (this->params.speculative_decoding_enabled()) {
+      if (llama_model_has_encoder(this->model_tgt)) {
+        throw std::runtime_error(
+            "speculative decoding is only implemented for decoder-only models (no encoder pass)");
+      }
+
+      this->params.has_eos = false;
+      this->params.n_drafted = 0;
+      this->params.n_accept = 0;
+      this->params.n_predict = 0;
+
+      if (this->prompt_tgt.empty()) {
+        throw std::runtime_error("speculative decoding needs a non-empty prompt");
+      }
+
+      if (this->prompt_tgt.size() > 1) {
+        this->curr_batch =
+            llama_batch_get_one(this->prompt_tgt.data(), (int32_t)this->prompt_tgt.size() - 1);
+        if (llama_decode(this->ctx_tgt, this->curr_batch)) {
+          throw std::runtime_error("failed to eval prompt prefix on target");
+        }
+      }
+
+      this->last_token = this->prompt_tgt.back();
+      this->prompt_tgt.pop_back();
+      int n_past = (int)this->prompt_tgt.size();
+
+      while (!this->params.has_eos) {
+        std::vector<llama_token> draft = this->draft();
+        if (draft.size() > (size_t)this->params.n_max) {
+          draft.resize((size_t)this->params.n_max);
+        }
+
+        this->clear_batch(this->batch_spec_tgt);
+        this->add_batch(this->batch_spec_tgt, this->last_token, (llama_pos)n_past, true);
+        n_past += 1;
+
+        if (draft.size() < (size_t)this->params.n_min) {
+          draft.clear();
+        }
+
+        for (size_t i = 0; i < draft.size(); ++i) {
+          this->add_batch(this->batch_spec_tgt, draft[i], (llama_pos)n_past + (llama_pos)i, true);
+        }
+
+        if (llama_decode(this->ctx_tgt, this->batch_spec_tgt)) {
+          throw std::runtime_error("target speculative verification decode failed");
+        }
+
+        const std::vector<llama_token> ids =
+            sample_and_accept_n(this->sampler, this->ctx_tgt, draft);
+        if (ids.empty()) {
+          throw std::runtime_error("speculative accept produced no tokens");
+        }
+
+        n_past += (int)ids.size() - 1;
+        this->params.n_drafted += (int64_t)draft.size();
+        this->params.n_accept += (int64_t)ids.size() - 1;
+        this->params.n_predict += (int64_t)ids.size();
+
+        const int n_vocab = llama_vocab_n_tokens(this->vocab_tgt);
+
+        for (size_t i = 0; i < ids.size(); ++i) {
+          const float *logits_row = llama_get_logits_ith(this->ctx_tgt, (int32_t)i);
+          if (logits_row) {
+            double max_logit = logits_row[0];
+            for (int j = 1; j < n_vocab; ++j) {
+              if (logits_row[j] > max_logit) {
+                max_logit = logits_row[j];
+              }
+            }
+            double denom = 0.0;
+            for (int j = 0; j < n_vocab; ++j) {
+              denom += std::exp((double)logits_row[j] - max_logit);
+            }
+            const llama_token tid = ids[i];
+            const double logit = logits_row[tid];
+            const double prob = std::exp((double)logit - max_logit) / denom;
+            file << tokens_decoded << ',' << logit << ',' << prob << ',' << std::log(prob) << '\n';
+          }
+
+          this->prompt_tgt.push_back(this->last_token);
+          this->last_token = ids[i];
+
+          if (llama_vocab_is_eog(this->vocab_tgt, this->last_token)) {
+            this->params.has_eos = true;
+            break;
+          }
+
+          char tokbuf[128];
+          const int tn =
+              llama_token_to_piece(this->vocab_tgt, this->last_token, tokbuf, sizeof(tokbuf), 0, true);
+          if (tn < 0) {
+            throw std::runtime_error("failed to convert token to piece");
+          }
+          if (i + 1 < ids.size()) {
+            std::printf("\x1b[%dm%.*s\x1b[0m", 36 - (int)(i % 6), tn, tokbuf);
+          } else {
+            std::printf("%.*s", tn, tokbuf);
+          }
+          std::fflush(stdout);
+          tokens_decoded += 1;
+        }
+
+        print(LogLevel::INFO,
+              "accepted {}/{} draft tokens, last target token id {}",
+              (int)ids.size() - 1, (int)draft.size(), this->last_token);
+
+        llama_memory_seq_rm(llama_get_memory(this->ctx_tgt), 0, n_past, -1);
+      }
+
+      std::printf("\n");
+
+      const int64_t end = ggml_time_us();
+      print(LogLevel::INFO, "--------------------------------------------------");
+      const float delta = (end - start) / 1000000.0f;
+      const float speed = tokens_decoded / std::max(delta, 1e-6f);
+      print(LogLevel::INFO, "decoded {} tokens in {} s, speed: {} t/s", tokens_decoded, delta, speed);
+      if (this->params.n_drafted > 0) {
+        print(LogLevel::INFO, "speculative: n_drafted = {}, n_accept = {}, accept = {:.2f}%",
+              this->params.n_drafted, this->params.n_accept,
+              100.0 * (double)this->params.n_accept / (double)this->params.n_drafted);
+      }
+      llama_perf_sampler_print(this->sampler);
+      llama_perf_context_print(this->ctx_tgt);
+      llama_perf_context_print(this->ctx_dft);
+      return;
+    }
+
     for (;;) {
       // evaluate the current batch with the transformer model
-      if (llama_decode(this->ctx_tgt, cur_batch)) {
+      if (llama_decode(this->ctx_tgt, curr_batch)) {
         throw std::runtime_error("failed to eval");
       }
 
@@ -473,7 +620,7 @@ private:
       fflush(stdout);
 
       // prepare the next batch with the sampled token
-      cur_batch = llama_batch_get_one(&current_token, 1);
+      curr_batch = llama_batch_get_one(&current_token, 1);
 
       tokens_decoded += 1;
     }
@@ -493,69 +640,129 @@ private:
     llama_perf_context_print(this->ctx_tgt);
   } // }}}
 
-  void draft(void) { // {{{
-    // COMMON_SPECULATIVE_TYPE_DRAFT
-    // auto &batch = this->cur_batch;
-    // auto &ctx_tgt = this->ctx_tgt;
-    auto &ctx_dft = this->ctx_dft;
-    // auto &sampler = this->sampler;
+  void clear_batch(llama_batch &batch) { batch.n_tokens = 0; }
 
-    auto *mem_dft = llama_get_memory(ctx_dft);
+  void add_batch(llama_batch &batch, llama_token id, llama_pos pos, bool want_logits) { // {{{
+    const int i = batch.n_tokens;
+    batch.token[i] = id;
+    batch.pos[i] = pos;
+    batch.n_seq_id[i] = 1;
+    batch.seq_id[i][0] = 0;
+    batch.logits[i] = want_logits;
+    batch.n_tokens++;
+  } // }}}
+
+  std::vector<llama_token> sample_and_accept_n(llama_sampler *smpl, llama_context *ctx, // {{{
+                                               const std::vector<llama_token> &draft) {
+    std::vector<llama_token> out;
+    out.reserve(draft.size() + 1);
+    llama_synchronize(ctx);
+    for (size_t k = 0; k < draft.size(); ++k) {
+      const llama_token id = llama_sampler_sample(smpl, ctx, (int32_t)k);
+      llama_sampler_accept(smpl, id);
+      out.push_back(id);
+      if (draft[k] != id) {
+        return out;
+      }
+    }
+    const llama_token id = llama_sampler_sample(smpl, ctx, (int32_t)draft.size());
+    llama_sampler_accept(smpl, id);
+    out.push_back(id);
+    return out;
+  } // }}}
+
+  std::vector<llama_token> draft(void) { // {{{
+    llama_context *ctx_dft = this->ctx_dft;
+    llama_memory_t mem_dft = llama_get_memory(ctx_dft);
 
     int reuse_i = 0;
     int reuse_n = 0;
-    int n_ctx = llama_n_ctx(ctx_dft);
+    const int n_ctx = (int)llama_n_ctx(ctx_dft) - this->params.n_max;
 
     const std::vector<llama_token> &prompt_cur = this->prompt_tgt;
+    const int i_start = std::max(0, (int)prompt_cur.size() - n_ctx);
 
-    const int i_start = std::max<int>(0, (int)prompt_cur.size() - n_ctx);
-
-    // reuse as much as possible from the old draft context
-    // ideally, the draft context should be as big as the target context and we will always reuse the entire prompt
-    for (int i = 0; i < (int)prompt_dft.size(); ++i) {
+    for (int i = 0; i < (int)this->prompt_dft.size(); ++i) {
       int cur = 0;
-      while (i_start + cur < (int)prompt_cur.size() &&
-             i + cur < (int)prompt_dft.size() &&
-             prompt_cur[i_start + cur] == prompt_dft[i + cur]) {
+      while (i_start + cur < (int)prompt_cur.size() && i + cur < (int)this->prompt_dft.size() &&
+             prompt_cur[(size_t)(i_start + cur)] == this->prompt_dft[(size_t)(i + cur)]) {
         cur++;
       }
-
       if ((cur >= 256 || n_ctx >= (int)prompt_cur.size()) && cur > reuse_n) {
         reuse_i = i;
         reuse_n = cur;
       }
     }
 
+    std::vector<llama_token> result;
+    result.reserve((size_t)this->params.n_max);
+
     if (reuse_n == 0) {
       llama_memory_clear(mem_dft, false);
-      prompt_dft.clear();
+      this->prompt_dft.clear();
     } else {
-      // this happens when a previous draft has been discarded (for example, due to being too small), but the
-      // target model agreed with it. in this case, we simply pass back the previous results to save compute
-      // if (reuse_i + reuse_n < (int)prompt_dft.size() && prompt_dft[reuse_i + reuse_n] == last_token) {
-      //   for (int i = reuse_i + reuse_n + 1; i < (int)prompt_dft.size(); ++i) {
-      //     result.push_back(prompt_dft[i]);
-      //
-      //     if (params.n_max <= (int)result.size()) {
-      //       break;
-      //     }
-      //   }
-      //
-      //   return;
-      // }
+      if (reuse_i + reuse_n < (int)this->prompt_dft.size() &&
+          this->prompt_dft[(size_t)(reuse_i + reuse_n)] == this->last_token) {
+        for (int i = reuse_i + reuse_n + 1; i < (int)this->prompt_dft.size(); ++i) {
+          result.push_back(this->prompt_dft[(size_t)i]);
+          if (this->params.n_max <= (int)result.size()) {
+            break;
+          }
+        }
+        return result;
+      }
 
       if (reuse_i > 0) {
         llama_memory_seq_rm(mem_dft, 0, 0, reuse_i);
         llama_memory_seq_add(mem_dft, 0, reuse_i, -1, -reuse_i);
-
-        prompt_dft.erase(prompt_dft.begin(), prompt_dft.begin() + reuse_i);
+        this->prompt_dft.erase(this->prompt_dft.begin(), this->prompt_dft.begin() + reuse_i);
       }
 
-      if (reuse_n < (int)prompt_dft.size()) {
+      if (reuse_n < (int)this->prompt_dft.size()) {
         llama_memory_seq_rm(mem_dft, 0, reuse_n, -1);
-        prompt_dft.erase(prompt_dft.begin() + reuse_n, prompt_dft.end());
+        this->prompt_dft.erase(this->prompt_dft.begin() + reuse_n, this->prompt_dft.end());
       }
     }
+
+    this->clear_batch(this->batch_spec_dft);
+    for (size_t i = (size_t)i_start + (size_t)reuse_n; i < prompt_cur.size(); ++i) {
+      this->add_batch(this->batch_spec_dft, prompt_cur[i], (llama_pos)(i - (size_t)i_start), false);
+      this->prompt_dft.push_back(prompt_cur[i]);
+    }
+    if (this->batch_spec_dft.n_tokens > 0) {
+      if (llama_decode(ctx_dft, this->batch_spec_dft)) {
+        throw std::runtime_error("draft model: failed to decode prompt tail");
+      }
+    }
+
+    const llama_pos n_past_before_last = (llama_pos)this->prompt_dft.size();
+    this->clear_batch(this->batch_spec_dft);
+    this->add_batch(this->batch_spec_dft, this->last_token, n_past_before_last, true);
+    this->prompt_dft.push_back(this->last_token);
+    if (llama_decode(ctx_dft, this->batch_spec_dft)) {
+      throw std::runtime_error("draft model: failed to decode last context token");
+    }
+
+    llama_sampler_reset(this->sampler_dft);
+
+    for (int i = 0; i < this->params.n_max; ++i) {
+      this->clear_batch(this->batch_spec_dft);
+      const llama_token id = llama_sampler_sample(this->sampler_dft, ctx_dft, 0);
+      llama_sampler_accept(this->sampler_dft, id);
+      result.push_back(id);
+
+      if (this->params.n_max <= (int)result.size()) {
+        break;
+      }
+
+      this->add_batch(this->batch_spec_dft, id, n_past_before_last + 1 + (llama_pos)i, true);
+      if (llama_decode(ctx_dft, this->batch_spec_dft)) {
+        break;
+      }
+      this->prompt_dft.push_back(id);
+    }
+
+    return result;
   } // }}}
 
 }; // }}}
