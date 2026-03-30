@@ -110,13 +110,6 @@ private:
   Parameters params;
 
   llama_token last_token;
-  llama_batch current_batch;
-
-  llama_sampler *sampler_tgt = nullptr;
-  llama_sampler *sampler_dft = nullptr;
-
-  llama_batch speculation_batch_tgt{};
-  llama_batch speculation_batch_dft{};
 
   llama_model *model_tgt = nullptr;
   llama_model *model_dft = nullptr;
@@ -126,6 +119,13 @@ private:
 
   std::vector<llama_token> prompt_tgt;
   std::vector<llama_token> prompt_dft;
+
+  llama_batch batch{};
+  llama_batch speculation_batch_tgt{};
+  llama_batch speculation_batch_dft{};
+
+  llama_sampler *sampler_tgt = nullptr;
+  llama_sampler *sampler_dft = nullptr;
 
   const struct llama_vocab *vocab_tgt = nullptr;
   const struct llama_vocab *vocab_dft = nullptr;
@@ -139,14 +139,14 @@ private:
     print(LogLevel::WARN, "  -t,   --temp <n>               temperature (default: {})", this->params.temp);
     print(LogLevel::WARN, "  -p,   --top-p <n>              top-p sampling (default: {})", this->params.top_p);
     print(LogLevel::WARN, "  -k,   --top-k <n>              top-k sampling (default: {})", this->params.top_k);
-    print(LogLevel::WARN, "  -pro, --prompt <text>          initial prompt (default: \"How old is the universe?\")");
+    print(LogLevel::WARN, "  -pro, --prompt <text>          initial prompt (default: \"{}\")", this->params.prompt);
     print(LogLevel::WARN, "  -tgt, --target-model <file>    gguf target model file (required)");
     print(LogLevel::WARN, "  -dft, --draft-model <file>     gguf draft model file (required for speculative decoding)");
     print(LogLevel::WARN, "  -ctx, --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
     print(LogLevel::WARN, "  -ngl, --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
     print(LogLevel::WARN, "");
     print(LogLevel::WARN, "Example:");
-    print(LogLevel::WARN, "  {} -tgt Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -p \"Tell me a joke\" -ctx 8192 -ngl 40", name);
+    print(LogLevel::WARN, "  {} -tgt Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf -pro \"Tell me a joke\" -ctx 8192 -ngl 40", name);
   } // }}}
 
   void parse_cli_args(int argc, char **argv) { // {{{
@@ -380,7 +380,7 @@ private:
         throw std::runtime_error("failed to convert token to piece");
       }
       std::string token;
-      for (std::size_t i = 0; i < strlen(buf); ++i) {
+      for (std::size_t i = 0; i < sizeof(buf); ++i) {
         if (buf[i] == '\n') {
           token += "\\n";
         } else {
@@ -426,7 +426,7 @@ private:
     }
 
     // prepare first batch of tokens aka the prompt
-    current_batch = llama_batch_get_one(prompt_tgt.data(), prompt_tgt.size());
+    batch = llama_batch_get_one(prompt_tgt.data(), prompt_tgt.size());
 
     // TODO remove; this is not required since most models are decoder only
     // if (llama_model_has_encoder(this->model_tgt)) {
@@ -467,6 +467,14 @@ private:
 
     if (this->params.speculative_decoding_is_enabled()) {
       // TODO add n-gram support
+
+      print(LogLevel::INFO, "Speculative Decoding is enabled");
+      char buf[1024] = {0};
+      llama_model_desc(this->model_tgt, buf, sizeof(buf));
+      print(LogLevel::INFO, "target_model :    {}", buf);
+      llama_model_desc(this->model_dft, buf, sizeof(buf));
+      print(LogLevel::INFO, "draft_model  :    {}", buf);
+
       // TODO remove; this is not required since most models are decoder only
       // if (llama_model_has_encoder(this->model_tgt)) {
       //   throw std::runtime_error("speculative decoding is only implemented for decoder-only models");
@@ -481,12 +489,10 @@ private:
       }
 
       // get prompt batch
-      this->current_batch = llama_batch_get_one(
-          this->prompt_tgt.data(),
-          (int32_t)this->prompt_tgt.size() - 1);
+      this->batch = llama_batch_get_one(this->prompt_tgt.data(), (int32_t)this->prompt_tgt.size() - 1);
 
-      // evaluate prompt
-      if (llama_decode(this->ctx_tgt, this->current_batch)) {
+      // evaluate prompt (aka update KV cache and compute logits for the prompt)
+      if (llama_decode(this->ctx_tgt, this->batch)) {
         throw std::runtime_error("failed to eval prompt prefix on target");
       }
 
@@ -518,15 +524,15 @@ private:
         this->reset_batch(this->speculation_batch_tgt);
 
         // add prompt batch to target
-        this->add_batch(this->speculation_batch_tgt, this->last_token, n_past, true);
+        this->create_new_batch(this->speculation_batch_tgt, this->last_token, n_past, true);
         n_past += 1;
 
         // add drafted tokens to the target
         for (size_t i = 0; i < draft.size(); ++i) {
-          this->add_batch(this->speculation_batch_tgt, draft[i], n_past + (llama_pos)i, true);
+          this->create_new_batch(this->speculation_batch_tgt, draft[i], n_past + (llama_pos)i, true);
         }
 
-        // evaluate batch
+        // evaluate the batch (aka update KV cache and compute logits for the batch)
         if (llama_decode(this->ctx_tgt, this->speculation_batch_tgt)) {
           throw std::runtime_error("target speculative verification decode failed");
         }
@@ -542,11 +548,8 @@ private:
         this->params.n_accept += (int64_t)accepted.size() - 1;
 
         for (size_t i = 0; i < accepted.size(); ++i) {
-          const float *logits = llama_get_logits_ith(this->ctx_tgt, (int32_t)i);
-          if (logits) {
-            auto [logit, prob] = softmax(logits, accepted[i]);
-            file << tokens_decoded << ',' << logit << ',' << prob << ',' << std::log(prob) << '\n';
-          }
+          auto [logit, prob] = softmax(llama_get_logits_ith(this->ctx_tgt, (int32_t)i), accepted[i]);
+          file << tokens_decoded << ',' << logit << ',' << prob << ',' << std::log(prob) << '\n';
 
           this->prompt_tgt.push_back(this->last_token);
           this->last_token = accepted[i];
@@ -563,7 +566,7 @@ private:
             throw std::runtime_error("failed to convert token to piece");
           }
           std::string token;
-          for (std::size_t i = 0; i < strlen(buf); ++i) {
+          for (std::size_t i = 0; i < sizeof(buf); ++i) {
             if (buf[i] == '\n') {
               token += "\\n";
             } else {
@@ -572,11 +575,12 @@ private:
           }
           if (i + 1 < accepted.size()) {
             print(LogLevel::INFO,
-                  "\x1b[{}m|{}|\x1b[0m{:<{}}"
+                  // "\x1b[{}m|{}|\x1b[0m{:<{}}"
+                  "\x1b[{}m|{}|\x1b[0m\t\t"
                   "(accepted {} out of {} draft tokens, last_token = {})",
                   36 - (int)(i % 6),
                   token.c_str(),
-                  "", 24 - (int)(token.size() + 2), // 24 variable len spacer
+                  // "", 24 - (int)(token.size() + 2), // 24 variable len spacer
                   (int)accepted.size() - 1,
                   (int)draft.size(),
                   this->last_token);
@@ -609,16 +613,15 @@ private:
     }
 
     for (;;) {
-      // evaluate the current batch with the transformer model
-      if (llama_decode(this->ctx_tgt, current_batch)) {
+      // evaluate the batch (aka update KV cache and compute logits for the batch)
+      if (llama_decode(this->ctx_tgt, batch)) {
         throw std::runtime_error("failed to eval");
       }
 
-      const float *logits = llama_get_logits_ith(this->ctx_tgt, -1);
-
+      // sample and accept the last token of the last evaluation
       current_token = llama_sampler_sample(this->sampler_tgt, this->ctx_tgt, -1);
 
-      auto [logit, prob] = softmax(logits, current_token);
+      auto [logit, prob] = softmax(llama_get_logits_ith(this->ctx_tgt, -1), current_token);
       file << tokens_decoded << ',' << logit << ',' << prob << ',' << std::log(prob) << '\n';
 
       // is it an end of generation?
@@ -635,7 +638,7 @@ private:
       std::fflush(stdout);
 
       // prepare the next batch with the sampled token
-      current_batch = llama_batch_get_one(&current_token, 1);
+      batch = llama_batch_get_one(&current_token, 1);
 
       tokens_decoded += 1;
     }
@@ -657,14 +660,14 @@ private:
     batch.n_tokens = 0;
   } // }}}
 
-  void add_batch( // {{{
+  void create_new_batch( // {{{
       llama_batch &batch,
       llama_token id,
       llama_pos pos,
       bool output) {
     // llama_decode does not take a string but a llama_batch which is a small array of slots,
     // each describing one token we want to process in this forward pass.
-    // add to batch basically is fill the next slot with (token, pos, logits, seq) and n_tokens++
+    // create_new_batch basically is fill the next slot with (token, pos, logits, seq) then n_tokens++
     assert(batch.seq_id[batch.n_tokens] && "llama_batch size exceeded");
     batch.token[batch.n_tokens] = id;
     batch.pos[batch.n_tokens] = pos;
@@ -684,12 +687,14 @@ private:
     accepted.reserve(draft.size() + 1);
 
     for (size_t index = 0; index < draft.size(); ++index) {
-      const llama_token id = llama_sampler_sample(sampler, ctx, (int32_t)index);
-      llama_sampler_accept(sampler, id);
-      accepted.push_back(id);
+      // given the current logits, pick a token
+      const llama_token accepted_token = llama_sampler_sample(sampler, ctx, (int32_t)index);
+      // that token is now part of the sequence, update internal state
+      llama_sampler_accept(sampler, accepted_token);
+      accepted.push_back(accepted_token);
       // stop at first mismatch
       // last element is the correction
-      if (draft[index] != id) {
+      if (draft[index] != accepted_token) {
         return accepted;
       }
     }
@@ -714,14 +719,15 @@ private:
 
     const std::vector<llama_token> &current_prompt = this->prompt_tgt;
 
-    //   context size of draft model   [50]
+    //   context size of draft model   [48]
     // - max tokens to draft at a time [16]
     // ____________________________________
-    //   tokens waiting to be drafted  [34]
-    // const int n_ctx = llama_n_ctx(ctx_dft) - this->params.n_max;
+    //
+    //   tokens waiting to be drafted  [32]
+    //
+    const int n_ctx = (int)llama_n_ctx(ctx_dft) - this->params.n_max;
 
     // the index of the first token waiting to be drafted
-    const int n_ctx = (int)llama_n_ctx(this->ctx_dft) - this->params.n_max;
     const int i_start = std::max(0, (int)current_prompt.size() - n_ctx);
 
     // reuse as much as possible from the old draft context
@@ -742,6 +748,7 @@ private:
     std::vector<llama_token> result;
     result.reserve((size_t)this->params.n_max); // n_max tokens to be drafted at a time
 
+    // TODO implement reuse context window mechanism
     // if (reuse_n == 0) {
     //   // nothing to be reused
     //   llama_memory_clear(mem_dft, false);
@@ -778,31 +785,42 @@ private:
 
     // for (size_t i = (size_t)i_start + (size_t)reuse_n; i < current_prompt.size(); ++i) {
     for (size_t i = i_start; i < current_prompt.size(); ++i) {
-      this->add_batch(
+      this->create_new_batch(
           this->speculation_batch_dft,
           current_prompt[i],
           (llama_pos)(i - (size_t)i_start), false);
+      // update the draft prefix
       this->prompt_dft.push_back(current_prompt[i]);
     }
 
-    if (this->speculation_batch_dft.n_tokens > 0) {
-      // evaluate the batch
-      if (llama_decode(this->ctx_dft, this->speculation_batch_dft)) {
-        throw std::runtime_error("draft model: failed to decode prompt window");
+    //
+    // TODO is this needed?
+    // we can just llama_decode the speculation_batch_dft after adding the last_token batch
+    // normally our batch is one new token each time (after the first full-prompt decode)
+    //
+    {
+      if (this->speculation_batch_dft.n_tokens > 0) {
+        // evaluate the batch (aka update KV cache and compute logits for the batch)
+        if (llama_decode(this->ctx_dft, this->speculation_batch_dft)) {
+          throw std::runtime_error("draft model: failed to decode prompt window");
+        }
       }
+
+      // clean slate again
+      this->reset_batch(this->speculation_batch_dft);
     }
 
-    // clean slate again
-    this->reset_batch(this->speculation_batch_dft);
+    // position of last_token equals the draft prefix
+    this->create_new_batch(
+        this->speculation_batch_dft,
+        this->last_token,
+        (llama_pos)this->prompt_dft.size(),
+        true);
 
-    // position of last_token equals current draft KV length
-    const llama_pos n_past_before_last = (llama_pos)this->prompt_dft.size();
-
-    this->add_batch(this->speculation_batch_dft, this->last_token, n_past_before_last, true);
-
+    // update the draft prefix with the last_token
     this->prompt_dft.push_back(this->last_token);
 
-    // evaluate the batch
+    // evaluate the batch (aka update KV cache and compute logits for the batch)
     if (llama_decode(this->ctx_dft, this->speculation_batch_dft)) {
       throw std::runtime_error("draft model: failed to decode last context token");
     }
@@ -816,9 +834,12 @@ private:
 
       this->reset_batch(this->speculation_batch_dft);
 
-      const llama_token id = llama_sampler_sample(this->sampler_dft, this->ctx_dft, 0);
-      llama_sampler_accept(this->sampler_dft, id);
-      result.push_back(id);
+      // turn logits into one chosen token
+      // given the current logits, pick a token
+      const llama_token accepted_token = llama_sampler_sample(this->sampler_dft, this->ctx_dft, 0);
+      // that token is now part of the sequence, update internal state
+      llama_sampler_accept(this->sampler_dft, accepted_token);
+      result.push_back(accepted_token);
 
       // make sure we don't surpass the max number of tokens to draft during speculative decoding
       if (this->params.n_max <= (int)result.size()) {
@@ -826,18 +847,18 @@ private:
       }
 
       // next position is always current prompt_dft.size()
-      this->add_batch(
+      this->create_new_batch(
           this->speculation_batch_dft,
-          id,
+          accepted_token,
           (llama_pos)this->prompt_dft.size(),
           true);
 
-      // evaluate batch
+      // evaluate the batch (aka update KV cache and compute logits for the batch)
       if (llama_decode(this->ctx_dft, this->speculation_batch_dft)) {
         break;
       }
 
-      this->prompt_dft.push_back(id);
+      this->prompt_dft.push_back(accepted_token);
     }
 
     return result;
