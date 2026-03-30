@@ -223,9 +223,9 @@ private:
     }
   } // }}}
 
-  std::tuple<double, double> softmax(
+  std::tuple<double, double> softmax( // {{{
       const float *logits_row,
-      const llama_token accepted) { // {{{
+      const llama_token accepted) {
     const int n_vocab = llama_vocab_n_tokens(this->vocab_tgt);
 
     double max_logit = logits_row[0];
@@ -374,12 +374,20 @@ private:
     }
 
     for (auto id : prompt_tgt) {
-      char token_buf[128];
-      int n = llama_token_to_piece(this->vocab_tgt, id, token_buf, sizeof(token_buf), 0, true);
+      char buf[128] = {0};
+      int n = llama_token_to_piece(this->vocab_tgt, id, buf, sizeof(buf), 0, true);
       if (n < 0) {
         throw std::runtime_error("failed to convert token to piece");
       }
-      print(LogLevel::INFO, "|{:.{}s}|", token_buf, n);
+      std::string token;
+      for (std::size_t i = 0; i < strlen(buf); ++i) {
+        if (buf[i] == '\n') {
+          token += "\\n";
+        } else {
+          token += buf[i];
+        }
+      }
+      print(LogLevel::INFO, "|{}|", token.c_str());
     }
 
     print(LogLevel::INFO, "llama_vocab_n_tokens:    {}", llama_vocab_n_tokens(this->vocab_tgt));
@@ -549,21 +557,32 @@ private:
             break;
           }
 
-          char token_buf[128];
-          int n = llama_token_to_piece(this->vocab_tgt, this->last_token, token_buf, sizeof(token_buf), 0, true);
+          char buf[128] = {0};
+          int n = llama_token_to_piece(this->vocab_tgt, this->last_token, buf, sizeof(buf), 0, true);
           if (n < 0) {
             throw std::runtime_error("failed to convert token to piece");
           }
-          if (i + 1 < accepted.size()) {
-            std::printf("\x1b[%dm|%.*s|\x1b[0m\t", 36 - (int)(i % 6), n, token_buf);
+          std::string token;
+          for (std::size_t i = 0; i < strlen(buf); ++i) {
+            if (buf[i] == '\n') {
+              token += "\\n";
+            } else {
+              token += buf[i];
+            }
           }
-          std::fflush(stdout);
+          if (i + 1 < accepted.size()) {
+            print(LogLevel::INFO,
+                  "\x1b[{}m|{}|\x1b[0m{:<{}}"
+                  "(accepted {} out of {} draft tokens, last_token = {})",
+                  36 - (int)(i % 6),
+                  token.c_str(),
+                  "", 24 - (int)(token.size() + 2), // 24 variable len spacer
+                  (int)accepted.size() - 1,
+                  (int)draft.size(),
+                  this->last_token);
+          }
           tokens_decoded += 1;
         }
-
-        print(LogLevel::INFO,
-              "accepted {}/{} draft tokens, last target token id {}",
-              (int)accepted.size() - 1, (int)draft.size(), this->last_token);
 
         llama_memory_seq_rm(mem_tgt, 0, n_past, -1);
       }
@@ -607,12 +626,12 @@ private:
         break;
       }
 
-      char token[128];
-      int n = llama_token_to_piece(this->vocab_tgt, current_token, token, sizeof(token), 0, true);
+      char buf[128] = {0};
+      int n = llama_token_to_piece(this->vocab_tgt, current_token, buf, sizeof(buf), 0, true);
       if (n < 0) {
         throw std::runtime_error("failed to convert token to piece");
       }
-      std::printf("%.*s", n, token);
+      std::printf("%.*s", n, buf);
       std::fflush(stdout);
 
       // prepare the next batch with the sampled token
