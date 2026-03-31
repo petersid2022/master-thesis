@@ -36,24 +36,28 @@ static inline void print(enum ggml_log_level level, std::string_view fmt, Args &
 
 struct Parameters // {{{
 {
-  int32_t ngl = 2048; // the number of layers to store in VRAM (<0 means all layers)
-  int32_t ctx = 2048; // text context, 0 = from model (TODO if speculative we use the same context window for both models)
+  // the number of layers to store in VRAM (<0 means all layers)
+  int32_t ngl = -1;
+
+  // text context, 0 = from model (TODO if speculative we use the same context window for both models)
+  int32_t ctx = 0;
 
   // Updates logit_i' = logit_i / temp.
   // When temp <= 0.0f, the maximum logit is kept at it's original value, the rest are set to -inf
   float temp = 0.8f;
 
-  bool greedy = true;
+  // greedy sampler (select the token with the highest prob)
+  bool greedy = false;
 
   // "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751
-  float top_p = 0.95f;
+  float top_p = 0.90f;
   int32_t top_k = 40;
 
   std::string prompt = "How old is the universe?";
 
   // speculative decoding parameters
   int64_t n_min = 0;     // minimum number of draft tokens to use for speculative decoding
-  int64_t n_max = 16;    // maximum number of tokens to draft during speculative decoding
+  int64_t n_max = 8;     // maximum number of tokens to draft during speculative decoding
   int64_t n_accept = 0;  // number of tokens accepted by the target model.
   int64_t n_drafted = 0; // number of tokens drafted by the draft model.
 
@@ -284,6 +288,7 @@ private:
   } // }}}
 
   void initialize(void) { // {{{
+#if 0
     this->log_file.open("log.txt", std::ios::out | std::ios::trunc);
     if (!this->log_file) {
       throw std::runtime_error("failed to open log.txt");
@@ -291,6 +296,7 @@ private:
     this->cout_saved = std::cout.rdbuf();
     this->tee_buf = std::make_unique<TeeBuf>(this->cout_saved, this->log_file.rdbuf());
     std::cout.rdbuf(this->tee_buf.get());
+#endif
 
     try {
       llama_log_set(
@@ -644,12 +650,11 @@ private:
             token.replace(pos, 1, "\\n");
             pos += 2;
           }
-          // TODO don't write ansi escape code sequences to log.txt
           print(GGML_LOG_LEVEL_INFO,
-                // "\x1b[{}m|{}|\x1b[0m{:<{}}"
-                "|{}|{:<{}}"
+                "\x1b[{}m|{}|\x1b[0m{:<{}}"
+                // "|{}|{:<{}}"
                 "(accepted {} out of {} draft tokens, last_token = {})",
-                // 36 - (int)(i % 6),
+                36 - (int)(i % 6),
                 token.c_str(),
                 "", 24 - (int)(token.size() + 2), // 24 variable len spacer
                 (int)accepted.size() - 1,
