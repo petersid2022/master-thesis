@@ -531,7 +531,7 @@ private:
 
     const int64_t start = ggml_time_us();
 
-    print(GGML_LOG_LEVEL_INFO, "llama_model_chat_template:    \n{}", llama_model_chat_template(this->model_tgt, NULL));
+    print(GGML_LOG_LEVEL_INFO, "llama_model_chat_template:\n{}", llama_model_chat_template(this->model_tgt, NULL));
 
     std::ofstream file("metrics.csv");
     if (!file) {
