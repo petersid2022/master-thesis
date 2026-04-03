@@ -348,6 +348,67 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
                 * else:
                     * get token string representation
                     * prepare the next batch with the sampled token
+  flowchart TB
+    subgraph start["start()"]
+      direction TB
+      I[initialize]
+      T[tokenize]
+      D[decode]
+      R[run]
+      I --> T --> D --> R
+    end
+    subgraph initialize["initialize()"]
+      direction TB
+      I1[Initialize libllama backend]
+      I2[Load target and draft models plus contexts]
+      I1 --> I2
+    end
+    subgraph tokenize["tokenize()"]
+      direction TB
+      T1[Get model vocabs]
+      T2[Tokenize prompt]
+      T1 --> T2
+    end
+    subgraph decode["decode()"]
+      direction TB
+      D1["Sampler and decoder setup<br/>temp, top-k, top-p, dist"]
+      D2[First batch equals prompt tokens]
+      D1 --> D2
+    end
+    subgraph run["run()"]
+      direction TB
+      Q{Speculative decoding?}
+      Q -->|yes| S
+      Q -->|no| N
+      subgraph S["Speculative path"]
+        direction TB
+        S0[Assert non-empty prompt]
+        S1[Prompt batch through transformer]
+        S2[Sample from last prompt token]
+        S3{End of sentence?}
+        S4[Draft tokens, resize or reset count]
+        S5[Verify with target model]
+        S6[Last token, logit, softmax]
+        S7{EOG token?}
+        S8[Token to string and metrics]
+        S0 --> S1 --> S2 --> S3
+        S3 -->|no| S4 --> S5 --> S6 --> S7
+        S7 -->|yes| SDONE[Done]
+        S7 -->|no| S8 --> S3
+      end
+      subgraph N["Non-speculative path"]
+        direction TB
+        N1[Prompt batch through transformer]
+        N2{EOG token?}
+        N3[Last token, logit, softmax]
+        N4[Token to string and metrics]
+        N5[Next batch is sampled token]
+        N1 --> N2
+        N2 -->|yes| NDONE[Done]
+        N2 -->|no| N3 --> N4 --> N5 --> N1
+      end
+    end
+
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
