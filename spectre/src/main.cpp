@@ -413,27 +413,46 @@ private:
     }
 
     if (this->params.speculative_decoding_is_enabled()) {
-
-      if (
-          llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
-          llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
-          llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
-          llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)) {
-        throw std::runtime_error("draft model special tokens must match target model to use speculation");
+      if (llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
+          (llama_vocab_get_add_bos(vocab_tgt) && llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft))) {
+        throw std::runtime_error(std::format(
+            "%s: draft model bos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+            __func__,
+            llama_vocab_get_add_bos(vocab_tgt), llama_vocab_get_add_bos(vocab_dft),
+            llama_vocab_bos(vocab_tgt), llama_vocab_bos(vocab_dft)));
       }
 
-      {
-        const int n_vocab_tgt = llama_vocab_n_tokens(vocab_tgt);
-        const int n_vocab_dft = llama_vocab_n_tokens(vocab_dft);
-        const int vocab_difference = n_vocab_tgt > n_vocab_dft
-                                         ? n_vocab_tgt - n_vocab_dft
-                                         : n_vocab_dft - n_vocab_tgt;
+      if (llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
+          (llama_vocab_get_add_eos(vocab_tgt) && llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft))) {
+        throw std::runtime_error(std::format(
+            "%s: draft model eos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+            __func__,
+            llama_vocab_get_add_eos(vocab_tgt), llama_vocab_get_add_eos(vocab_dft),
+            llama_vocab_eos(vocab_tgt), llama_vocab_eos(vocab_dft)));
+      }
 
-        if (vocab_difference > 128) {
+      const int n_vocab_tgt = llama_vocab_n_tokens(vocab_tgt);
+      const int n_vocab_dft = llama_vocab_n_tokens(vocab_dft);
+      const int vocab_diff = n_vocab_tgt > n_vocab_dft
+                                 ? n_vocab_tgt - n_vocab_dft
+                                 : n_vocab_dft - n_vocab_tgt;
+
+      if (vocab_diff > 128) {
+        throw std::runtime_error(std::format(
+            "%s: draft model vocab must closely match target model to use speculation but "
+            "target vocab size %d does not match draft vocab size %d - difference %d, max allowed 128\n",
+            __func__, n_vocab_tgt, llama_vocab_n_tokens(vocab_dft), vocab_diff));
+      }
+
+      for (int i = 128; i < std::min(n_vocab_tgt, n_vocab_dft); ++i) {
+        const char *token_text_tgt = llama_vocab_get_text(vocab_tgt, i);
+        const char *token_text_dft = llama_vocab_get_text(vocab_dft, i);
+
+        if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
           throw std::runtime_error(std::format(
-              "draft model vocab must closely match target model to use speculation but "
-              "target vocab size {} does not match draft vocab size {} - difference {}, max allowed 128",
-              n_vocab_tgt, llama_vocab_n_tokens(vocab_dft), vocab_difference));
+              "%s: draft model vocab must match target model to use speculation but "
+              "token %d content differs\n",
+              __func__, i));
         }
       }
     }
