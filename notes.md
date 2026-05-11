@@ -348,6 +348,8 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
                 * else:
                     * get token string representation
                     * prepare the next batch with the sampled token
+
+```
   flowchart TB
     subgraph start["start()"]
       direction TB
@@ -408,7 +410,12 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
         N2 -->|no| N3 --> N4 --> N5 --> N1
       end
     end
+```
 
+## DFlash
+* https://github.com/z-lab/dflash
+* https://arxiv.org/abs/2602.06036
+* https://arxiv.org/pdf/2602.06036
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
