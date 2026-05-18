@@ -417,6 +417,10 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
 * https://arxiv.org/abs/2602.06036
 * https://arxiv.org/pdf/2602.06036
 
+## server: fix checkpoints creation by jacekpoplawski · Pull Request #22929 · ggml-org/llama.cpp
+* https://www.reddit.com/r/LocalLLaMA/comments/1tn0jyp/server_fix_checkpoints_creation_by_jacekpoplawski/
+* https://github.com/ggml-org/llama.cpp/pull/22929
+
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
 2. <span id="resources-llama-cpp-docs-speculative-md"></span> [llama.cpp: docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md)
