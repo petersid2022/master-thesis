@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# benchmark_spectre.sh — sweep the spectre binary over (mode × draft length × seed)
+# and produce one self-contained run directory per invocation under $RESULTS_DIR.
+#
+# Each run directory contains:
+#   meta.json    config + per-run aggregates + per-round summaries
+#   tokens.csv   per-accepted-token observations
+#
+# After the sweep completes (or you Ctrl-C it), regenerate all 7 figures with:
+#   python3 spectre/scripts/quality_eval.py
+#
+# All settings below can be overridden via environment variables.
+#
+# Examples
+#   # default sweep (uses local Nemotron 4B BF16/Q8 pair):
+#   bash benchmark_spectre.sh
+#
+#   # quick smoke (1 seed, 1 spec config, 32 tokens each):
+#   SEEDS=42 N_MAX_VALUES=4 N_PREDICT=32 bash benchmark_spectre.sh
+#
+#   # bigger sweep:
+#   SEEDS="42 43 44" N_MAX_VALUES="2 4 8 16" N_PREDICT=256 bash benchmark_spectre.sh
+#
+#   # custom models / prompt:
+#   TGT_MODEL=/path/to/target.gguf DFT_MODEL=/path/to/draft.gguf \
+#     PROMPT_FILE=my-prompt.txt bash benchmark_spectre.sh
+
+set -euo pipefail
+
+# -------------------------------------------------------------------- config
+
+SPECTRE="${SPECTRE:-spectre/build/main}"
+
+TGT_MODEL="${TGT_MODEL:-models/Nemotron-3-Nano-4B-BF16.gguf}"
+DFT_MODEL="${DFT_MODEL:-models/Nemotron-3-Nano-4B-Q8_0.gguf}"
+
+# Use PROMPT_FILE for long prompts; otherwise edit PROMPT below.
+PROMPT_FILE="${PROMPT_FILE:-}"
+PROMPT="${PROMPT:-Write a short Python function that returns the n-th Fibonacci number using memoization, then briefly explain how it works.}"
+
+N_PREDICT="${N_PREDICT:-128}"     # hard cap on generated tokens per run
+CTX="${CTX:-2048}"
+NGL="${NGL:--1}"                  # -1 = all layers on GPU (no-op on CPU-only builds)
+TEMP="${TEMP:-0.8}"
+TOP_P="${TOP_P:-0.9}"
+TOP_K="${TOP_K:-40}"
+
+SEEDS="${SEEDS:-42 43}"           # repeated each config; gives error-bar fodder
+N_MAX_VALUES="${N_MAX_VALUES:-2 4 8}"  # speculative draft lengths to sweep
+RESULTS_DIR="${RESULTS_DIR:-results/spectre}"
+TIMEOUT="${TIMEOUT:-600}"         # seconds per run; 0 disables
+FORCE="${FORCE:-0}"               # 1 = re-run even if meta.json says complete
+
+# -------------------------------------------------------------------- preflight
+
+red()   { printf '\033[31m%s\033[0m' "$*"; }
+green() { printf '\033[32m%s\033[0m' "$*"; }
+bold()  { printf '\033[1m%s\033[0m' "$*"; }
+
+die() { echo "$(red ERROR): $*" >&2; exit 1; }
+
+[[ -x "$SPECTRE"    ]] || die "missing binary: $SPECTRE — build with: (cd spectre && cmake -B build && cmake --build build)"
+[[ -f "$TGT_MODEL"  ]] || die "missing target model: $TGT_MODEL — set TGT_MODEL=<path> or place the file"
+[[ -f "$DFT_MODEL"  ]] || die "missing draft model: $DFT_MODEL — set DFT_MODEL=<path> or place the file"
+
+if [[ -n "$PROMPT_FILE" ]]; then
+  [[ -f "$PROMPT_FILE" ]] || die "missing prompt file: $PROMPT_FILE"
+  PROMPT="$(cat "$PROMPT_FILE")"
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  die "python3 not on PATH (needed to check 'complete' flag in meta.json)"
+fi
+
+mkdir -p "$RESULTS_DIR"
+
+# -------------------------------------------------------------------- enumerate runs
+
+# Each entry encodes: "<run-id>|<draft-model-or-empty>|<n-max>|<seed>"
+runs=()
+for seed in $SEEDS; do
+  runs+=( "ar-baseline_seed${seed}||0|${seed}" )
+  for k in $N_MAX_VALUES; do
+    runs+=( "spec-nmax${k}_seed${seed}|${DFT_MODEL}|${k}|${seed}" )
+  done
+done
+
+total=${#runs[@]}
+
+# -------------------------------------------------------------------- header
+
+echo "$(bold spectre benchmark sweep)"
+echo "  binary:        $SPECTRE"
+echo "  target model:  $TGT_MODEL"
+echo "  draft model:   $DFT_MODEL"
+echo "  prompt:        ${PROMPT:0:80}$([[ ${#PROMPT} -gt 80 ]] && echo '...')"
+echo "  n_predict:     $N_PREDICT     ctx: $CTX     ngl: $NGL"
+echo "  sampler:       temp=$TEMP top_p=$TOP_P top_k=$TOP_K"
+echo "  seeds:         $SEEDS"
+echo "  n_max sweep:   $N_MAX_VALUES"
+echo "  results dir:   $RESULTS_DIR"
+echo "  timeout/run:   ${TIMEOUT}s     force re-run: $FORCE"
+echo "  total runs:    $total"
+echo
+
+start_wall=$(date +%s)
+n_done=0
+n_skip=0
+n_fail=0
+
+# -------------------------------------------------------------------- main loop
+
+idx=0
+for entry in "${runs[@]}"; do
+  idx=$((idx + 1))
+  IFS='|' read -r run_id dft nmax seed <<< "$entry"
+  out_dir="$RESULTS_DIR/$run_id"
+  log_file="$RESULTS_DIR/$run_id.log"
+
+  if [[ "$FORCE" != "1" && -f "$out_dir/meta.json" ]]; then
+    is_complete=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open('$out_dir/meta.json')).get('complete', False))
+except Exception:
+    print(False)
+") || is_complete=False
+    if [[ "$is_complete" == "True" ]]; then
+      printf "[%2d/%d] %-32s %s\n" "$idx" "$total" "$run_id" "$(green SKIP) (already complete)"
+      n_skip=$((n_skip + 1))
+      continue
+    fi
+  fi
+
+  args=(
+    --target-model "$TGT_MODEL"
+    --prompt       "$PROMPT"
+    --ctx-size     "$CTX"
+    --n-gpu-layers "$NGL"
+    --n-predict    "$N_PREDICT"
+    --temp         "$TEMP"
+    --top-p        "$TOP_P"
+    --top-k        "$TOP_K"
+    --seed         "$seed"
+    --run-id       "$run_id"
+    --results-dir  "$RESULTS_DIR"
+  )
+  if [[ -n "$dft" ]]; then
+    args+=( --draft-model "$dft" --n-max "$nmax" )
+  fi
+
+  printf "[%2d/%d] %-32s running... " "$idx" "$total" "$run_id"
+
+  rc=0
+  if [[ "$TIMEOUT" == "0" ]]; then
+    "$SPECTRE" "${args[@]}" > "$log_file" 2>&1 || rc=$?
+  else
+    timeout "$TIMEOUT" "$SPECTRE" "${args[@]}" > "$log_file" 2>&1 || rc=$?
+  fi
+
+  # Read back the meta.json to summarize.
+  summary=$(python3 -c "
+import json, sys
+try:
+    m = json.load(open('$out_dir/meta.json'))
+    t = m.get('totals', {})
+    print('complete=%s n=%d tok/s=%.2f accept=%.3f' % (
+        m.get('complete', False),
+        t.get('n_decoded_tokens', 0),
+        t.get('tok_per_s', 0.0),
+        t.get('accept_rate', 0.0),
+    ))
+except Exception as e:
+    print('no-meta:%s' % e)
+" 2>/dev/null) || summary="no-meta"
+
+  if [[ $rc -eq 0 ]]; then
+    echo "$(green OK)    $summary"
+    n_done=$((n_done + 1))
+  elif [[ $rc -eq 124 ]]; then
+    echo "$(red TIMEOUT) ($TIMEOUT s)  $summary"
+    n_fail=$((n_fail + 1))
+  else
+    echo "$(red FAIL)  rc=$rc  $summary  log: $log_file"
+    n_fail=$((n_fail + 1))
+  fi
+done
+
+# -------------------------------------------------------------------- footer
+
+end_wall=$(date +%s)
+elapsed=$((end_wall - start_wall))
+echo
+echo "$(bold done)  ${elapsed}s wall.  $(green ok=$n_done) $(green skip=$n_skip) $(red fail=$n_fail)"
+echo
+echo "next steps:"
+echo "  $(bold 'inspect a run:')   python3 -c \"import json; print(json.dumps(json.load(open('$RESULTS_DIR/${runs[0]%%|*}/meta.json')), indent=2))\""
+echo "  $(bold 'regenerate plots:') python3 spectre/scripts/quality_eval.py"
+echo "  $(bold 'view dashboard:')   cd spectre/presentation/html && python3 -m http.server 8765"
