@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spectre — quality evaluation results</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/thesis-figures.css" />
+    <style>
+      figure.diagram img { width: 100%; height: auto; display: block; border-radius: 6px; background: white; }
+      .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; margin: 1rem 0 1.5rem; }
+      .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; }
+      .stat .label { font-size: 0.85rem; color: var(--muted); }
+      .stat .value { font-size: 1.4rem; font-weight: 600; color: var(--text); margin-top: 0.15rem; }
+      .stat .delta { font-size: 0.85rem; margin-top: 0.1rem; }
+      .delta.good { color: var(--draft); }
+      .delta.bad { color: #c53030; }
+      table.results { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1.5rem; font-size: 0.95rem; }
+      table.results th, table.results td { padding: 0.55rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border); }
+      table.results th { color: var(--muted); font-weight: 600; }
+      table.results td.num { font-variant-numeric: tabular-nums; text-align: right; }
+      table.results tr.baseline td { color: var(--muted); font-style: italic; }
+      table.results tr.best td { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>Quality results</h1>
+        <nav>
+          <a href="#summary">Headline numbers</a>
+          <a href="#losslessness">1. Losslessness check</a>
+          <a href="#difficulty">2. Where difficulty hides</a>
+          <a href="#acceptance">3. Acceptance per speculator</a>
+          <a href="#frontier">4. Speed–acceptance frontier</a>
+          <a href="#per-position">5. Per-position decay</a>
+          <a href="#regen">How to regenerate</a>
+        </nav>
+        <p class="note" style="margin-top: 1rem">
+          See also <a href="atlas.html">conceptual diagrams</a> and the
+          <a href="index.html">dashboard</a>.
+        </p>
+      </aside>
+
+      <main>
+        <a class="back" href="index.html">← Dashboard</a>
+
+        <article id="summary">
+          <h2>Headline numbers</h2>
+          <p class="lead">
+            Populated automatically from each <code>results/spectre/&lt;run-id&gt;/meta.json</code>
+            once you collect fresh runs with the new <code>RunRecorder</code>-instrumented
+            spectre binary. See the
+            <a href="#regen">How to regenerate</a> section below for the exact commands.
+          </p>
+          <p class="note">
+            The previous llama-server n-gram benchmark numbers (Qwen3.5-9B Q8 on NVIDIA L4,
+            <code>ngram_cache</code> +8.9 %, etc.) lived in <code>logs/benchmark-logs/</code>
+            and were collected from a different engine. They're preserved in
+            <code>notes.md</code> for context but are no longer the source of these figures.
+          </p>
+        </article>
+
+        <article id="losslessness">
+          <h2>1. Losslessness sanity check</h2>
+          <p class="lead">
+            Per-token <code>log p_target(accepted)</code> from <code>spectre/metrics.csv</code>
+            (written by the <code>softmax()</code> instrumentation in
+            <code>spectre/src/main.cpp:266–288</code>). 173 tokens, temperature 0.8.
+            Bottom panel: cumulative perplexity. Re-running with
+            <code>--spec-type none</code> produces an overlapping curve — empirical
+            proof of losslessness.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-ppl-trace.png" alt="Per-token log probability and cumulative perplexity" />
+            <figcaption>
+              <strong>Figure 1.</strong> Corpus PPL converges to 1.392. Most tokens are easy
+              (<code>p ≈ 1</code>) — exactly the regime where an n-gram speculator can match
+              the target's argmax.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="difficulty">
+          <h2>2. Where is the difficulty hiding?</h2>
+          <p class="lead">
+            Distribution of <code>p_target(x)</code> on accepted tokens. The bimodal shape
+            (mass near 1, long tail toward 0) is what an adaptive speculator should target:
+            speculate aggressively on the easy mass, fall back on the hard tail.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-target-prob-hist.png" alt="Histogram of target probability on accepted tokens" />
+            <figcaption>
+              <strong>Figure 2.</strong> Mean <code>p_target</code> = 0.77. Connects directly
+              to AdaEDL / SpecDec++: stop drafting when local entropy is high.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="acceptance">
+          <h2>3. Mean acceptance rate per speculator</h2>
+          <p class="lead">
+            From <code>logs/benchmark-logs/*.log</code>. Three runs per configuration.
+            Note the gap between the single <code>ngram_cache</code> (0.355) and the chain
+            (0.201) — chain pays a per-round overhead for running 5 speculators.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-acceptance-by-run.png" alt="Mean draft acceptance rate per run" />
+            <figcaption>
+              <strong>Figure 3.</strong> <code>ngram_simple</code> and the smart-pick chain
+              collapse to nearly zero acceptance — they fail to match the boilerplate
+              patterns that <code>ngram_cache</code> picks up on.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="frontier">
+          <h2>4. Efficiency frontier — speed vs. acceptance</h2>
+          <p class="lead">
+            The most counterintuitive result. Speculation is <strong>not free</strong>:
+            below an empirical break-even of ≈ 0.10 acceptance, draft overhead exceeds
+            savings and you end up <em>slower</em> than the autoregressive baseline.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-speed-vs-accept.png" alt="Decode throughput vs. acceptance rate" />
+            <figcaption>
+              <strong>Figure 4.</strong> Dashed line = baseline. <code>ngram_simple</code>
+              and chain (smart pick) sit below it — negative speedup. <code>ngram_cache</code>
+              and chain (all 5) clear the threshold.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="per-position">
+          <h2>5. Per-position acceptance — why long drafts saturate</h2>
+          <p class="lead">
+            Under an independent-Bernoulli model, the i-th drafted token is accepted with
+            probability <code>p̂ⁱ</code>. <code>p̂</code> is fitted from each speculator's
+            global <code>A/G</code> ratio. The right panel shows expected accepted tokens per
+            call vs. draft length k — saturates by k ≈ 6 even for the best speculator.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-per-position-empirical.png" alt="Empirical per-position acceptance and expected accepted vs. draft length" />
+            <figcaption>
+              <strong>Figure 5.</strong> Direct motivation for adaptive draft length
+              (AdaEDL, SpecDec++): static k is always a compromise; per-token confidence
+              gating wins. Fitted <code>p̂</code>: ngram_cache 0.63, chain (all 5) 0.46,
+              ngram_simple / smart pick 0.14.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="regen">
+          <h2>How to regenerate these figures</h2>
+          <p class="lead">
+            Two steps. First, run experiments — each spectre invocation produces one
+            self-contained run directory:
+          </p>
+          <pre style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto;"><code># target-only baseline
+spectre/build/main --target-model &lt;tgt.gguf&gt; --seed 42 \
+  --run-id ar-baseline-seed42 --prompt "..."
+
+# speculative
+spectre/build/main --target-model &lt;tgt.gguf&gt; --draft-model &lt;dft.gguf&gt; \
+  --seed 42 --run-id spec-dft1-seed42 --prompt "..."</code></pre>
+          <p class="lead">
+            Then regenerate all figures (one command, reads every <code>results/spectre/&lt;run-id&gt;/</code>):
+          </p>
+          <pre style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto;"><code>python3 spectre/scripts/quality_eval.py</code></pre>
+          <p class="lead">
+            Each run directory contains:
+          </p>
+          <ul>
+            <li><code>meta.json</code> — config snapshot + per-run aggregates + per-round summaries</li>
+            <li><code>tokens.csv</code> — per-token observations (<code>step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob</code>)</li>
+          </ul>
+          <p class="lead">
+            See the slide outline at
+            <a href="../quality_eval_slides.md"><code>spectre/presentation/quality_eval_slides.md</code></a>
+            and the full derivation + schema in
+            <a href="../../../notes.md"><code>notes.md → Quality Evaluation</code></a>.
+          </p>
+        </article>
+      </main>
+    </div>
+  </body>
+</html>

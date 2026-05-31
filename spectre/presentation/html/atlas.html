@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spectre — figure atlas (Mermaid)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/thesis-figures.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>Diagrams</h1>
+        <nav>
+          <a href="#overview">AR vs speculative</a>
+          <a href="#lifecycle">start() pipeline</a>
+          <a href="#prefix-target">Target prefix init</a>
+          <a href="#prefix-draft">Draft prefix window</a>
+          <a href="#draft-to-target">Draft → target batch</a>
+          <a href="#pipeline-round">One speculative round</a>
+          <a href="#propagation">Draft → verify data flow</a>
+          <a href="#accept">sample_and_accept</a>
+          <a href="#batch">Verification batch positions</a>
+          <a href="#addbatch">Verify-batch slots</a>
+          <a href="#kv">KV rollback</a>
+          <a href="#twomodel">Two-model setup</a>
+          <a href="#vocab">Vocab checks</a>
+          <a href="#future">Future work</a>
+        </nav>
+        <p class="note" style="margin-top: 1rem">
+          See also <a href="quality.html">Quality results</a> and the
+          <a href="index.html">dashboard</a>.
+        </p>
+      </aside>
+      <main>
+        <a class="back" href="index.html">← Index</a>
+
+        <article id="overview">
+          <h2>Autoregressive vs speculative (inside <code>run()</code>)</h2>
+          <p class="lead">
+            Both paths share <code>start()</code> through <code>decode()</code>. The fork is the first statement in
+            <code>run()</code>: if <code>-dft</code> was passed, the speculative branch runs; otherwise the infinite AR
+            loop uses the full-prompt <code>batch</code> from <code>decode()</code>.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  classDef tgt fill:#e8f4fc,stroke:#2b6cb0,stroke-width:2px,color:#0f172a
+  classDef dft fill:#e6faf0,stroke:#276749,stroke-width:2px,color:#0f172a
+
+  subgraph AR["`Autoregressive run() — no draft path`"]
+    direction TB
+    a0["`batch = full prompt from decode() (one slot per token)`"]
+    a1["`forward(target_model, batch)`"]
+    a2["`next_id ← sample from last position logits`"]
+    a3["`softmax / metrics · emit token`"]
+    a4["`batch ← single-token batch(current_token)`"]
+    a0 --> a1 --> a2 --> a3 --> a4 --> a1
+  end
+
+  subgraph SP["`Speculative run() — draft + batched verify on target`"]
+    direction TB
+    p0["`Warm-up: batch = prompt except last · forward · last_token = pop_back`"]
+    p1["`Each round: n_past = last committed position + 1`"]
+    p2["`draft() → token ids (draft model, many 1-token steps)`"]
+    p3["`Clamp draft length to [n_min, n_max]`"]
+    p4["`clear / reset verify batch`"]
+    p5["`enqueue last_token @ n_past, then each draft[i] @ n_past+1+i`"]
+    p6["`one batched forward on target (verify batch)`"]
+    p7["`accept/reject vs draft · optional bonus token`"]
+    p8["`commit: append prior last_token to prefix · advance last_token`"]
+    p9["`drop uncommitted KV tail after rollback`"]
+    p0 --> p1 --> p2 --> p3 --> p4 --> p5 --> p6 --> p7 --> p8 --> p9 --> p1
+  end
+
+  class a0,a1,a2,a3,a4 tgt
+  class p0,p1,p3,p4,p5,p6,p7,p8,p9 tgt
+  class p2 dft
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> AR: reuse one global <code>batch</code>, one token per forward. Speculative: prefix
+              warm-up once, then repeated draft on <code>ctx_dft</code> and a single batched verify on
+              <code>ctx_tgt</code> per round.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="lifecycle">
+          <h2><code>start()</code> pipeline</h2>
+          <p class="lead">
+            <code>start()</code> calls <code>initialize</code> → <code>tokenize</code> → <code>decode</code> →
+            <code>run</code> in that order. Only <code>run()</code> diverges; <code>decode()</code> always builds the
+            initial full-prompt <code>batch</code> for the target, and additionally allocates draft samplers and
+            <code>speculation_batch_*</code> when speculation is enabled.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  S(["`Entry · start()`"])
+
+  subgraph INIT["`initialize()`"]
+    i1["`init inference runtime / backend`"]
+    i2["`load target model (+ draft model if enabled)`"]
+    i3["`create model contexts (target + optional draft)`"]
+    i1 --> i2 --> i3
+  end
+
+  subgraph TOK["`tokenize()`"]
+    t1["`prompt → target-vocab token ids`"]
+    t2["`context / batch capacity checks`"]
+    t3["`If spec: BOS/EOS alignment + vocab delta ≤ 128`"]
+    t1 --> t2 --> t3
+  end
+
+  subgraph DEC["`decode()`"]
+    d1["`build samplers: top_k, top_p, temperature, distribution`"]
+    d2["`If spec: allocate verify batches (target + draft paths)`"]
+    d3["`batch ← full prompt as one forward-ready batch`"]
+    d1 --> d2 --> d3
+  end
+
+  subgraph RUN["`run()`"]
+    r1{"`speculative decoding enabled?`"}
+    r2["`Spec branch: prefix warm-up, then loop until EOS`"]
+    r3["`AR branch: repeat forward → sample last → single-token batch`"]
+    r1 -->|yes| r2
+    r1 -->|no| r3
+  end
+
+  S --> INIT --> TOK --> DEC --> RUN
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Shared setup through <code>decode()</code>; the speculative path does not replace
+              <code>batch</code> until <code>run()</code> rebuilds the target prefix and switches to
+              <code>speculation_batch_tgt</code> for verification.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="prefix-target">
+          <h2>Target prefix before the speculative loop</h2>
+          <p class="lead">
+            In <code>run()</code> (spec branch), <code>prompt_tgt</code> still holds the full tokenized prompt. One
+            target forward pass ingests indices <code>0 … N−2</code>; the final prompt token is held out as
+            <code>last_token</code> so every later step extends the same sequence the AR loop would have produced one
+            token at a time.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  subgraph BEFORE["`Before warm-up decode`"]
+    direction TB
+    B1["`| t0 | t1 | … | tN−2 | tN−1 |  ← prompt_tgt, size N`"]
+  end
+
+  subgraph WARM["`Warm-up batch`"]
+    direction TB
+    W1["`batch ← tokens t0 … tN−2 (one row each)`"]
+    W2["`forward(target_model, batch)`"]
+    W1 --> W2
+  end
+
+  subgraph AFTER["`After peel`"]
+    direction TB
+    A1["`last_token = tN−1`"]
+    A2["`prompt_tgt.pop_back() → stored prefix t0 … tN−2`"]
+    A3["`KV: positions 0 … N−2 for that prefix`"]
+    A1 --> A2
+    A2 --> A3
+  end
+
+  BEFORE --> WARM --> AFTER
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> The held-out <code>last_token</code> is the first token verified against the draft
+              in the main loop; <code>n_past</code> for that row comes from
+              <code>max KV position + 1</code>, which equals <code>N−1</code> after warm-up.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="prefix-draft">
+          <h2>Draft model: sliding prefix window</h2>
+          <p class="lead">
+            Each <code>draft()</code> call clears draft memory and replays only a suffix of <code>prompt_tgt</code>
+            that fits in <code>draft_context − n_max</code> slots, so there is room for <code>last_token</code>
+            plus up to <code>n_max</code> draft steps.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  subgraph CALC["`Window on shared history`"]
+    direction TB
+    c1["`n_ctx = draft_context_length − n_max`"]
+    c2["`i_start = max(0, prompt_tgt.size() − n_ctx)`"]
+    c1 --> c2
+  end
+
+  subgraph MEM["`prompt_tgt window`"]
+    direction TB
+    m1["`Tokens before i_start: not in draft KV this round`"]
+    m2["`Tokens i_start … end-1: replayed into draft KV`"]
+    m1 --> m2
+  end
+
+  subgraph DFT["`draft() replay batch (logits false)`"]
+    direction TB
+    f1["`For i = i_start … prompt_tgt.size()−1`"]
+    f2["`enqueue token[i] @ local pos, no logits (replay)`"]
+    f3["`forward(draft_model) — fills KV for replayed tail`"]
+    f1 --> f2 --> f3
+  end
+
+  subgraph SEED["`Align with target`"]
+    direction TB
+    s1["`enqueue last_token @ next pos, request logits`"]
+    s2["`decode — draft logits for same symbol target will verify`"]
+    s1 --> s2
+  end
+
+  subgraph LOOP["`Autoregressive draft on draft model`"]
+    direction TB
+    l1["`Up to n_max: sample · enqueue id · forward (logits on)`"]
+    l2["`Return vector draft = sampled ids`"]
+    l1 --> l2
+  end
+
+  CALC --> MEM
+  MEM --> DFT --> SEED --> LOOP
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Early prompt tokens may fall off the draft window; positions in the draft batch
+              are local (0 …). <code>prompt_dft</code> mirrors what was fed to the draft KV so the next position is always
+              <code>prompt_dft.size()</code>.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="draft-to-target">
+          <h2>From draft IDs to the target verification batch</h2>
+          <p class="lead">
+            The draft model only returns token ids. The target never sees draft logits; it receives those ids as
+            <em>hypotheses</em> in <code>speculation_batch_tgt</code> at the correct absolute positions, then compares
+            its own samples to the draft column-wise in <code>sample_and_accept</code>.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  subgraph OUT["`draft() output`"]
+    d0["`draft[0]`"]
+    d1["`draft[1]`"]
+    dk["`…`"]
+    dm["`draft[K-1]`"]
+    d0 --> d1 --> dk --> dm
+  end
+
+  subgraph TGT["`target verify batch — one batched forward`"]
+    direction TB
+    r0["`row 0: token last_token · pos n_past · logits true`"]
+    r1["`row 1: token draft[0] · pos n_past+1`"]
+    r2["`row 2: token draft[1] · pos n_past+2`"]
+    rk["`…`"]
+    r0 --> r1 --> r2 --> rk
+  end
+
+  subgraph CMP["`sample_and_accept`"]
+    direction TB
+    x1["`Row i: sample target id · if id != draft[i] return accepted (correction)`"]
+    x2["`If all match: bonus sample at row draft.size()`"]
+    x1 --> x2
+  end
+
+  OUT -->|"ids copied into batch slots"| TGT
+  TGT -->|"logits rows 0…K"| CMP
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> <code>add_batch</code> advances local <code>n_past</code> after
+              <code>last_token</code>; each <code>draft[i]</code> sits at <code>n_past + 1 + i</code>. The target runs
+              one forward; verifier reads logits with indices <code>0 … draft.size()</code>.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="pipeline-round">
+          <h2>One speculative round (matches <code>run()</code> loop body)</h2>
+          <p class="lead">
+            Order and variable names follow the spec branch of <code>run()</code>: <code>n_past</code> is local each
+            iteration; it is updated before the commit loop, then KV rollback uses that value.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  A["`pmax ← max committed position in target KV`"]
+  B["`n_past ← (pmax &lt; 0) ? 0 : pmax + 1`"]
+  C["`draft ← draft(); clamp length to [n_min, n_max]`"]
+  D["`reset verify batch`"]
+  E["`enqueue last_token @ n_past (logits on); n_past++`"]
+  F["`for each i: enqueue draft[i] @ n_past + i (logits on)`"]
+  G["`forward(target_model, verify_batch)`"]
+  H["`accepted ← greedy verify + optional bonus sample`"]
+  I["`n_past += accepted.size() − 1`"]
+  J["`for each accepted[i]: grow prefix; last_token ← accepted[i]`"]
+  K["`trim target KV from n_past onward (discard speculative tail)`"]
+
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Verify decode extends the target KV along the speculative chain; the rm call drops
+              positions from <code>n_past</code> onward so only the committed prefix (plus the new
+              <code>last_token</code>) remains for the next round.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="propagation">
+          <h2>Data flow: draft context, target batch, committed text</h2>
+          <p class="lead">
+            <code>prompt_tgt</code> stores the agreed prefix; <code>last_token</code> is always the next symbol to
+            extend. The inner loop pushes the previous <code>last_token</code> into the vector before adopting each
+            element of <code>accepted</code>.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant PT as prompt_tgt
+  participant LT as last_token
+  participant DFT as draft model
+  participant BT as target verify batch
+  participant TGT as target model
+
+  Note over PT,LT: Invariant: full sequence = prompt_tgt + [last_token]
+  DFT->>DFT: draft(): clear KV, replay tail, sample K ids
+  DFT-->>BT: draft[] (ids only, no cross-context handle)
+  LT->>BT: row 0: last_token @ n_past
+  loop i = 0 .. K - 1
+    DFT->>BT: row i+1: draft[i] @ n_past+1+i
+  end
+  BT->>TGT: single batched forward on target
+  TGT->>TGT: compare samples to draft (row-wise)
+  loop for each id in accepted
+    PT->>PT: append previous last_token to prefix
+    LT->>LT: last_token := id
+  end
+  TGT->>TGT: rollback KV from updated n_past
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Draft and target are separate contexts; coupling is explicit copying of token ids
+              into the target verify batch and index-aligned sampling. After acceptance, KV is trimmed to
+              match the updated <code>prompt_tgt</code> + <code>last_token</code> story.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="accept">
+          <h2><code>sample_and_accept</code></h2>
+          <p class="lead">
+            Greedy comparison of draft vs. target sample at each logits row; early exit on mismatch; bonus sample if all
+            match.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TD
+  SYNC["`sync compute (if needed)`"] --> Q1{"`more draft positions to check?`"}
+  Q1 -->|yes| SAM["`id ← sample logits row index`"]
+  SAM --> ACC["`record accepted token`"]
+  ACC --> PUSH["`append id to accepted`"]
+  PUSH --> Q2{"`id matches draft[index]?`"}
+  Q2 -->|no| OUT1["`return accepted (first mismatch)`"]
+  Q2 -->|yes| INC["`index++`"]
+  INC --> Q1
+  Q1 -->|no| BON["`sample bonus at row after last draft`"]
+  BON --> ACC2["`record · append bonus`"]
+  ACC2 --> OUT2["`return accepted (all matched + bonus)`"]
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Greedy row-wise comparison with early exit on mismatch and a bonus draw when all
+              draft tokens match.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="batch">
+          <h2>Target verification batch positions</h2>
+          <p class="lead">
+            Let <code>n0</code> be <code>n_past</code> right before <code>add_batch(last_token, …)</code>. After that
+            call the code does <code>n_past += 1</code>, then adds each draft token at <code>n_past + i</code>, which is
+            <code>n0 + 1 + i</code> on the wire.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  subgraph VB["`target verify batch — one batched forward`"]
+    direction TB
+    R0["`row 0 · pos n0 · token last_token · logits true → sample row 0 vs draft[0]`"]
+    R1["`row 1 · pos n0+1 · token draft[0]`"]
+    R2["`row 2 · pos n0+2 · token draft[1]`"]
+    RD["`…`"]
+    RK["`row K · pos n0+K · token draft[K−1]`"]
+  end
+  R0 --> R1 --> R2 --> RD --> RK
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Logits index <code>i</code> corresponds to the distribution after consuming the
+              token at row <code>i</code>; <code>sample_and_accept</code> compares the sample at row <code>i</code> to
+              <code>draft[i]</code> for <code>i &lt; draft.size()</code>, then may draw a bonus at row
+              <code>draft.size()</code>.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="addbatch">
+          <h2>Verify-batch slot layout</h2>
+          <p class="lead">Each appended slot carries token id, absolute position, sequence id, and whether this row should produce logits.</p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  subgraph SL["`One batch slot (next free index n)`"]
+    direction TB
+    T["`token_id[n] ← id`"]
+    P["`position[n] ← absolute seq index`"]
+    S["`sequence id[n] ← stream (e.g. 0)`"]
+    L["`emit_logits[n] ← yes / no`"]
+  end
+  T --> P --> S --> L
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Draft replay typically sets <code>emit_logits = no</code>; verification sets
+              <code>emit_logits = yes</code> on speculative rows.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="kv">
+          <h2>KV cache rollback</h2>
+          <p class="lead">After committing accepted tokens, unverified suffix positions are dropped from the target KV cache.</p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  A["`Verify decode extends KV with speculative positions`"]
+  B["`n_past += accepted.size() − 1 (before state loop)`"]
+  C["`Loop: append prior last_token to prefix · last_token ← each accepted id`"]
+  D["`trim target KV from n_past onward`"]
+  E["`Tail removed — KV matches committed sequence`"]
+  A --> B --> C --> D --> E
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Prevents rejected speculative tail from persisting; logical sequence continues via
+              <code>prompt_tgt</code> + <code>last_token</code>.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="twomodel">
+          <h2>Two-model architecture</h2>
+          <p class="lead"><code>model_tgt</code> / <code>model_dft</code> with shared sampling hyperparameters.</p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  classDef dft fill:#e6faf0,stroke:#276749,stroke-width:2px,color:#0f172a
+  classDef tgt fill:#e8f4fc,stroke:#2b6cb0,stroke-width:2px,color:#0f172a
+
+  subgraph SH["`Shared setup (decode)`"]
+    P["`top_k, top_p, temp — paired samplers (target + draft)`"]
+  end
+
+  subgraph DF["`Draft model`"]
+    D1["`draft model + KV state`"]
+    D2["`Smaller context · many 1-token decodes`"]
+  end
+
+  subgraph TG["`Target model`"]
+    T1["`target model + KV state`"]
+    T2["`Batched verification each round`"]
+  end
+
+  P --> D1
+  P --> T1
+  D1 --> D2
+  T1 --> T2
+  D2 -->|draft token ids| T2
+
+  class D1,D2 dft
+  class T1,T2 tgt
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Same <code>top_k</code>, <code>top_p</code>, <code>temp</code>, <code>dist</code> chains in
+              <code>decode()</code>.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="vocab">
+          <h2>Speculation preconditions</h2>
+          <p class="lead">Checked in <code>tokenize()</code> when draft path enabled.</p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  V1["`BOS / EOS special tokens align`"] --> V2["`vocab size delta ≤ 128`"]
+  V2 --> OK["`tokenize() passes — macro bound`"]
+            </pre>
+            <figcaption><strong>Figure.</strong> Avoids incompatible token ids between draft and target.</figcaption>
+          </figure>
+        </article>
+
+        <article id="future">
+          <h2>Future directions (notes.md)</h2>
+          <p class="lead">Thesis roadmap: adaptive length, trees, heterogeneous scheduling, traces.</p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  FW["`Future work (thesis roadmap)`"]
+
+  FW --> AD["`Adaptive draft length`"]
+  FW --> TR["`Tree / multi-branch drafting`"]
+  FW --> HT["`Heterogeneous execution`"]
+  FW --> TS["`Trace-driven speculation`"]
+
+  AD --> AD1["`AdaEDL, SpecDec++, entropy signals`"]
+  TR --> TR1["`TALON, batched attention cost`"]
+  HT --> HT1["`CPU / GPU / NPU split, cost models`"]
+  TS --> TS1["`Hot n-grams, JIT-style specialization`"]
+            </pre>
+            <figcaption>
+              <strong>Figure.</strong> Topic tree for related-work and conclusion slides (from <code>notes.md</code> themes).
+            </figcaption>
+          </figure>
+        </article>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+    <script>
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "base",
+        securityLevel: "loose",
+        themeVariables: {
+          primaryColor: "#e8f4fc",
+          primaryTextColor: "#1a202c",
+          primaryBorderColor: "#2b6cb0",
+          secondaryColor: "#e6faf0",
+          secondaryBorderColor: "#276749",
+          tertiaryColor: "#f7fafc",
+          lineColor: "#4a5568",
+          fontFamily: "Source Sans 3, system-ui, sans-serif",
+          fontSize: "15px",
+        },
+        flowchart: {
+          htmlLabels: true,
+          curve: "basis",
+          padding: 14,
+          nodeSpacing: 50,
+          rankSpacing: 55,
+          /* Markdown labels (`["`…`"]`) wrap at this width — wider reduces mid-word breaks */
+          wrappingWidth: 300,
+        },
+        sequence: {
+          actorMargin: 50,
+          boxMargin: 8,
+          wrap: true,
+        },
+      });
+    </script>
+  </body>
+</html>
