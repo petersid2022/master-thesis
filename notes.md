@@ -34,6 +34,15 @@
 - [Trace-Based Speculation](#trace-based-speculation)
   - [Lightweight JIT for token prediction that runs alongside the draft model](#lightweight-jit-for-token-prediction-that-runs-alongside-the-draft-model)
 - [A Comprehensive Analysis of SD Implementations and Techniques](#a-comprehensive-analysis-of-sd-implementations-and-techniques)
+- [Quality Evaluation](#quality-evaluation)
+  - [Why naive perplexity is a trap](#why-naive-perplexity-is-a-trap)
+  - [The acceptance rule and why it preserves the distribution](#the-acceptance-rule-and-why-it-preserves-the-distribution)
+  - [The TV-distance bound on acceptance](#the-tv-distance-bound-on-acceptance)
+  - [Perplexity as a sanity check](#perplexity-as-a-sanity-check)
+  - [Empirical metrics we actually report](#empirical-metrics-we-actually-report)
+  - [Data convention](#data-convention)
+  - [How the literature evaluates "quality is preserved"](#how-the-literature-evaluates-quality-is-preserved)
+  - [When perplexity becomes a real lever (lossy variants)](#when-perplexity-becomes-a-real-lever-lossy-variants)
 - [Resources](#resources)
 - [Footnote](#footnote)
 <!--toc:end-->
@@ -420,6 +429,231 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
 ## server: fix checkpoints creation by jacekpoplawski · Pull Request #22929 · ggml-org/llama.cpp
 * https://www.reddit.com/r/LocalLLaMA/comments/1tn0jyp/server_fix_checkpoints_creation_by_jacekpoplawski/
 * https://github.com/ggml-org/llama.cpp/pull/22929
+
+## Quality Evaluation
+
+> [!TIP]
+>
+> How do we know that the text speculative decoding produces is "as good as" what the target model would have produced on its own?
+> Short answer for vanilla SD: by construction, it is *identical in distribution*. Long answer below.
+
+### Why naive perplexity is a trap
+
+The first instinct is: "run target alone, run SD, compute perplexity of each output, compare." This is wrong for two reasons:
+
+1. **They sample different sequences.** Perplexity of a *generated* sequence under the model that generated it is a self-evaluation, not a comparison. Two different valid completions of the same prompt can have very different per-token perplexities and both be high-quality.
+2. **For vanilla SD the comparison is theoretically vacuous.** The output of correct SD is a *sample* from the target — exactly. So `PPL(SD output | target)` and `PPL(target output | target)` have the same distribution. Reporting "they match" doesn't prove much; reporting "they differ" proves your SD implementation is buggy.
+
+So perplexity is useful here as a **sanity check** (the implementation is correct) and as a **drift metric** (for lossy variants), not as a quality comparison between losslessly-equivalent algorithms.
+
+### The acceptance rule and why it preserves the distribution
+
+Let `p(x | ctx)` be the target distribution and `q(x | ctx)` the draft distribution at the current position. Draft proposes `x ~ q`. Speculative sampling accepts `x` with probability
+
+```
+α(x) = min(1, p(x) / q(x))
+```
+
+and, if rejected, resamples from the residual distribution
+
+```
+p̃(x) ∝ max(0, p(x) − q(x))     (normalized so it sums to 1)
+```
+
+**Theorem** (Leviathan et al. 2022; Chen et al. 2023): the marginal distribution of the accepted token equals `p(·|ctx)` exactly.
+
+*Proof sketch.* Mass on a particular token `x*` after one step:
+- accepted from draft: `q(x*) · min(1, p(x*)/q(x*)) = min(q(x*), p(x*))`
+- contributed via residual after rejection: `P(reject) · p̃(x*)` where `P(reject) = 1 − Σₓ min(p(x), q(x))` and `p̃(x*) = max(0, p(x*) − q(x*)) / P(reject)`
+- sum: `min(p(x*), q(x*)) + max(0, p(x*) − q(x*)) = p(x*)`.  ∎
+
+Implication: **the output text from vanilla SD is statistically indistinguishable from target-only sampling.** Any "is the draft bonkers" question collapses to "is your implementation correct."
+
+### The TV-distance bound on acceptance
+
+The *only* dial that affects how much you accept is how close `q` is to `p`. Expected per-token acceptance probability:
+
+```
+E[α] = Σₓ q(x) · min(1, p(x)/q(x))
+     = Σₓ min(p(x), q(x))
+     = 1 − ½ Σₓ |p(x) − q(x)|
+     = 1 − TV(p, q)
+```
+
+So `TV(p, q)` (total variation distance) is the **theoretical upper bound** on the marginal speedup you can get from any drafter. Equivalent statements with KL: `TV ≤ √(½ KL(p ‖ q))` (Pinsker), so high KL ⇒ low acceptance, but the reverse doesn't hold tightly.
+
+For our n-gram speculators, `q` is essentially a Dirac delta on the predicted token, so:
+- `TV(p, q) = 1 − p(x_predicted)`
+- Acceptance probability per position = `p(x_predicted)` exactly.
+- Acceptance count over many calls ≈ Bernoulli with parameter `E[p(x_predicted)]`.
+
+This is why the empirical `A / G` ratio is a useful summary statistic for n-gram drafting specifically.
+
+### Perplexity as a sanity check
+
+Per-token target probability of accepted tokens is written by `RunRecorder::record_token`
+in `spectre/src/main.cpp`, into `results/spectre/<run-id>/tokens.csv` (schema below).
+
+Corpus PPL of a generated sequence:
+
+```
+PPL = exp( -mean( log p_target(x_t | x_<t) ) )
+```
+
+For vanilla SD this should equal (within sampling noise) the PPL of a target-only run
+with the same prompt and seed. Disagreement = a bug in the acceptance code. The new
+`--seed` flag pins the sampler so this comparison is reproducible across runs.
+
+### Empirical metrics we actually report
+
+Three families, in order of importance:
+
+1. **Speed**
+   - decode throughput `tok/s` (from `eval time` line in llama-server logs)
+   - per-token latency `ms/token`
+   - prefill `tok/s` (mostly invariant to SD, but useful to confirm)
+
+2. **Efficiency** (drafter performance)
+   - `acceptance rate = A / G` where `A` = accepted draft tokens, `G` = generated draft tokens
+   - `block efficiency τ = E[accepted per call]` (Leviathan 2022)
+   - `mean accepted length` per speculative round
+   - per-position acceptance `P(i-th accepted) = p̂ⁱ` under independent-Bernoulli model
+
+3. **Quality** (only matters for lossy variants; sanity check for lossless)
+   - per-token `log p_target(accepted)` trace
+   - corpus PPL of generated text
+   - histogram of `p_target(x)` (where does difficulty hide?)
+   - KL(p ‖ q) per position if both distributions are available
+
+Scripts:
+- `spectre/scripts/quality_eval.py` reads every `results/spectre/<run-id>/` directory
+  and produces 7 PNGs into `spectre/presentation/png/quality-*.png`.
+- See also `spectre/presentation/quality_eval_slides.md` for the slide outline and
+  `spectre/presentation/html/quality.html` for the live HTML view.
+
+### Data convention
+
+Every invocation of the spectre binary produces a self-contained, reproducible run directory:
+
+```
+results/spectre/<run-id>/
+  meta.json       config snapshot + per-run aggregates + per-round summaries
+  tokens.csv      per-accepted-token observations (one row per accepted token)
+```
+
+A run-id is auto-generated as `YYYYMMDD-HHMMSS_<mode>_seed<N>` or set explicitly via
+`--run-id`. The run directory is written incrementally — `meta.json` is created at
+startup with `"complete": false` and overwritten at the end with `"complete": true`
+plus totals. `tokens.csv` is flushed per row. Both files survive `SIGTERM` / `SIGINT`.
+
+**`meta.json` schema** (annotated):
+
+```jsonc
+{
+  "run_id": "20260531-141523_spec_seed42",
+  "started_at": "2026-05-31T14:15:23",
+  "complete": true,                 // false iff process was killed pre-finalize
+  "config": {
+    "tgt_model_path": "...gguf",
+    "dft_model_path": "...gguf"|null,
+    "speculative": true,            // = (dft_model_path != null)
+    "ctx": 4096, "ngl": -1,
+    "n_min": 0, "n_max": 8,
+    "temp": 0.8, "top_p": 0.9, "top_k": 40, "greedy": false,
+    "seed": 42,
+    "prompt_n_chars": 432,
+    "prompt": "..."
+  },
+  "totals": {
+    "n_decoded_tokens": 173,
+    "n_drafted": 280,
+    "n_accepted_drafts": 100,
+    "n_bonus_samples": 50,
+    "accept_rate": 0.357,
+    "prompt_ms": 117.9,
+    "decode_ms": 37862.7,
+    "total_ms": 37980.6,
+    "tok_per_s": 4.57
+  },
+  "rounds": [                       // one entry per speculative call
+    {"n_drafted": 4, "n_accepted_drafts": 2, "rejected_pos": 2},
+    {"n_drafted": 4, "n_accepted_drafts": 4, "rejected_pos": -1}
+  ]
+}
+```
+
+`rejected_pos = -1` means all draft tokens in that call matched (the target then
+contributed a bonus sample, counted in `n_bonus_samples`).
+
+**`tokens.csv` schema:**
+
+| column          | type    | meaning |
+|---|---|---|
+| `step`          | int     | global accepted-token index (0-based) |
+| `call`          | int     | speculative call index (0-based); equals `step` in AR mode |
+| `source`        | str     | `"draft"`, `"bonus"`, or `"ar"` |
+| `pos_in_draft`  | int     | 0..k-1 if `source=="draft"`, else -1 |
+| `token_id`      | int     | token id of the accepted token |
+| `p_target`      | float   | target's probability mass on the accepted token |
+| `p_draft`       | float   | draft's probability mass on the same token (empty for `bonus`/`ar`) |
+| `logit`         | float   | target's logit value of the accepted token |
+| `logprob`       | float   | `log p_target` |
+
+Empty `p_draft` cells are NaN. The script `quality_eval.py` handles both empty and NaN.
+
+**Reproducibility checklist** for the thesis: prompt is recorded in full, sampler is
+seeded via `--seed`, model paths are absolute, and `started_at` lets you correlate
+with system logs. To regenerate any result: `spectre/build/main --run-id <same> ...`
+will overwrite the directory deterministically.
+
+### How the literature evaluates "quality is preserved"
+
+| Family | Examples | Quality battery |
+|---|---|---|
+| Vanilla SD (lossless) | Leviathan 2022, Chen 2023 | None required; PPL parity as sanity check |
+| Self-speculation / n-gram | llama.cpp ngram_*, our PR #22055 | None required (still uses standard rejection rule) |
+| Tree drafting (lossless) | SpecInfer, EAGLE, TALON | None required; ablations on tree topology |
+| **Soft / lossy acceptance** | Medusa, Lookahead | HumanEval pass@1, MT-Bench, GSM8K, MMLU |
+| **Reward-guided** | RSD (Liao 2025) | MATH, GSM8K, AIME — task-specific |
+| **Quantized draft** | various | Corpus PPL on WikiText-103 / C4 + downstream |
+| **Biased acceptance** (`τ < 1`) | various ablations | KL drift + downstream evals |
+
+Standard datasets when downstream evaluation is required:
+- **Generation quality:** MT-Bench, AlpacaEval, Arena-Hard
+- **Reasoning:** GSM8K, MATH, AIME, MMLU
+- **Code:** HumanEval, MBPP, LiveCodeBench
+- **PPL:** WikiText-103, C4 validation, The Pile validation slice
+
+What papers **don't** typically use for SD evaluation:
+- BLEU / ROUGE / chrF — penalize valid alternative completions; bad fit for sampling.
+- Single-prompt qualitative comparison — anecdotal, not reproducible.
+
+### When perplexity becomes a real lever (lossy variants)
+
+Lossless SD is the boring case (PPL preserved by construction). The interesting frontier is **lossy** variants that deliberately trade exactness for speed:
+
+1. **Biased acceptance.** Replace `α(x) = min(1, p(x)/q(x))` with `α'(x) = min(1, τ · p(x)/q(x))` for `τ > 1`. Accepts more tokens, drifts away from `p`. The Pareto frontier `speedup × KL(p ‖ p')` is the right thing to plot.
+2. **Medusa-style soft acceptance.** Multiple heads vote; the rejection rule is relaxed. PPL drift vs. speedup is reported in the Medusa paper.
+3. **Reward-guided (RSD).** Replace acceptance criterion with a reward threshold. Can actually *improve* over target on reasoning tasks at the cost of theoretical unbiasedness.
+4. **Aggressive draft quantization** (Q2/Q3 draft of a Q8 target). Increases `TV(p, q)` — quality drift if you keep the acceptance rule strict, or speed gain if you relax it.
+
+Plausible thesis follow-up: with `p_target` and `p_draft` now in `tokens.csv` per
+accepted token, sweep a bias parameter `τ ∈ [1.0, 2.5]` in the acceptance rule
+and plot the Pareto `extra-speedup` vs `mean |p_target − p_draft|` (TV proxy)
+vs `HumanEval pass@1`. Converts the "lossless / lossy" boolean into a continuous
+design space.
+
+Figures produced by `spectre/scripts/quality_eval.py` (run after collecting fresh data):
+
+| File | What it shows |
+|---|---|
+| `quality-ppl-trace.png` | per-token logprob + cumulative PPL; baseline AR overlay if a complete AR run exists |
+| `quality-target-prob-hist.png` | distribution of `p_target(accepted)` split by source (draft / bonus / ar) |
+| `quality-acceptance-by-run.png` | bar chart of acceptance rate per run |
+| `quality-speed-vs-accept.png` | efficiency frontier (with baseline reference line) |
+| `quality-per-position-empirical.png` | empirical per-position acceptance + Bernoulli model |
+| `quality-draft-vs-target-prob.png` | `p_target` vs `p_draft` scatter on accepted tokens |
+| `quality-rounds-histogram.png` | distribution of accepted-per-call vs. geometric model |
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
