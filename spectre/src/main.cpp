@@ -1,12 +1,18 @@
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <format>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "llama-cpp.h"
@@ -67,6 +73,14 @@ struct Parameters // {{{
   std::string dft_model_path;
   std::string tgt_model_path;
 
+  // reproducibility / structured output
+  uint32_t seed = 1234;
+  std::string results_dir = "results/spectre";
+  std::string run_id; // auto-generated if empty
+
+  // hard cap on generated tokens (0 = unlimited, stop only on EOS / KV exhaustion)
+  int64_t n_predict = 0;
+
   bool speculative_decoding_is_enabled() {
     if (!this->dft_model_path.empty()) {
       return true;
@@ -94,6 +108,220 @@ private:
   std::streambuf *sb1;
   std::streambuf *sb2;
 }; // }}}
+
+// {{{ structured per-run output (meta.json + tokens.csv)
+struct RoundSummary {
+  int n_drafted;
+  int n_accepted_drafts;
+  int rejected_pos; // -1 if all draft tokens accepted
+};
+
+class RunRecorder {
+public:
+  // Open output files under <results_dir>/<run_id>/ and snapshot config at start so
+  // that a partial meta.json exists even if the run is killed before finalize().
+  RunRecorder(const std::string &results_dir, const std::string &run_id,
+              const std::string &started_at_iso, const Parameters &p)
+      : run_dir(std::filesystem::path(results_dir) / run_id),
+        run_id_(run_id),
+        started_at_(started_at_iso),
+        params_snapshot_(p) {
+    std::filesystem::create_directories(this->run_dir);
+
+    this->tokens.open(this->run_dir / "tokens.csv");
+    if (!this->tokens) {
+      throw std::runtime_error(std::format("failed to open {}", (this->run_dir / "tokens.csv").string()));
+    }
+    this->tokens << "step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob\n";
+
+    // Write an initial meta.json with "complete": false so partial runs are inspectable.
+    this->write_meta(/*complete=*/false, 0, 0, 0, 0, 0.0, 0.0);
+  }
+
+  // step is auto-incremented; call is provided by the speculative loop (or step for AR).
+  // For source != "draft", pos_in_draft must be -1 and p_draft is left empty.
+  // Flushes every row so the file is durable even if the process is killed mid-run.
+  void record_token(
+      int call,
+      const char *source,
+      int pos_in_draft,
+      int token_id,
+      double p_target,
+      double p_draft, // pass NAN to leave empty
+      double logit,
+      double logprob) {
+    this->tokens << this->step << ',' << call << ',' << source << ','
+                 << pos_in_draft << ',' << token_id << ','
+                 << fmt_double(p_target) << ','
+                 << fmt_double(p_draft) << ','
+                 << fmt_double(logit) << ','
+                 << fmt_double(logprob) << '\n'
+                 << std::flush;
+    this->step += 1;
+  }
+
+  void record_round(int n_drafted, int n_accepted_drafts, int rejected_pos) {
+    this->rounds.push_back({n_drafted, n_accepted_drafts, rejected_pos});
+  }
+
+  // Finalize: flush tokens, overwrite meta.json with complete:true plus totals.
+  void finalize(
+      int64_t n_decoded_tokens,
+      int64_t n_drafted,
+      int64_t n_accepted_drafts,
+      int64_t n_bonus_samples,
+      double prompt_ms,
+      double decode_ms) {
+    this->tokens.flush();
+    this->tokens.close();
+    this->write_meta(/*complete=*/true, n_decoded_tokens, n_drafted,
+                     n_accepted_drafts, n_bonus_samples, prompt_ms, decode_ms);
+  }
+
+  const std::filesystem::path &dir() const { return this->run_dir; }
+
+  // ISO-8601 local timestamp suitable for the "started_at" field and run_id default.
+  static std::string iso_timestamp(bool compact = false) {
+    using clock = std::chrono::system_clock;
+    auto now = clock::now();
+    std::time_t t = clock::to_time_t(now);
+    std::tm tm_local{};
+#if defined(_WIN32)
+    localtime_s(&tm_local, &t);
+#else
+    localtime_r(&t, &tm_local);
+#endif
+    std::ostringstream os;
+    if (compact) {
+      os << std::put_time(&tm_local, "%Y%m%d-%H%M%S");
+    } else {
+      os << std::put_time(&tm_local, "%Y-%m-%dT%H:%M:%S");
+    }
+    return os.str();
+  }
+
+private:
+  // Atomically replace meta.json: write to a sibling tmp file then rename.
+  // Called once from the constructor (complete=false, zero totals) and again from
+  // finalize (complete=true, real totals). Robust to mid-run kills.
+  void write_meta(bool complete,
+                  int64_t n_decoded_tokens,
+                  int64_t n_drafted,
+                  int64_t n_accepted_drafts,
+                  int64_t n_bonus_samples,
+                  double prompt_ms,
+                  double decode_ms) {
+    const std::filesystem::path final_path = this->run_dir / "meta.json";
+    const std::filesystem::path tmp_path = this->run_dir / "meta.json.tmp";
+
+    std::ofstream m(tmp_path);
+    if (!m) {
+      throw std::runtime_error(std::format("failed to open {}", tmp_path.string()));
+    }
+
+    const Parameters &p = this->params_snapshot_;
+    const double total_ms = prompt_ms + decode_ms;
+    const double tok_per_s = decode_ms > 0.0 ? (1000.0 * (double)n_decoded_tokens / decode_ms) : 0.0;
+    const double accept_rate = n_drafted > 0
+                                   ? (double)n_accepted_drafts / (double)n_drafted
+                                   : 0.0;
+
+    m << "{\n";
+    m << "  \"run_id\": \"" << json_escape(this->run_id_) << "\",\n";
+    m << "  \"started_at\": \"" << json_escape(this->started_at_) << "\",\n";
+    m << "  \"complete\": " << (complete ? "true" : "false") << ",\n";
+
+    m << "  \"config\": {\n";
+    m << "    \"tgt_model_path\": \"" << json_escape(p.tgt_model_path) << "\",\n";
+    m << "    \"dft_model_path\": " << (p.dft_model_path.empty()
+                                            ? "null"
+                                            : ("\"" + json_escape(p.dft_model_path) + "\""))
+      << ",\n";
+    m << "    \"speculative\": " << (p.dft_model_path.empty() ? "false" : "true") << ",\n";
+    m << "    \"ctx\": " << p.ctx << ",\n";
+    m << "    \"ngl\": " << p.ngl << ",\n";
+    m << "    \"n_min\": " << p.n_min << ",\n";
+    m << "    \"n_max\": " << p.n_max << ",\n";
+    m << "    \"temp\": " << p.temp << ",\n";
+    m << "    \"top_p\": " << p.top_p << ",\n";
+    m << "    \"top_k\": " << p.top_k << ",\n";
+    m << "    \"greedy\": " << (p.greedy ? "true" : "false") << ",\n";
+    m << "    \"seed\": " << p.seed << ",\n";
+    m << "    \"n_predict\": " << p.n_predict << ",\n";
+    m << "    \"prompt_n_chars\": " << p.prompt.size() << ",\n";
+    m << "    \"prompt\": \"" << json_escape(p.prompt) << "\"\n";
+    m << "  },\n";
+
+    m << "  \"totals\": {\n";
+    m << "    \"n_decoded_tokens\": " << n_decoded_tokens << ",\n";
+    m << "    \"n_drafted\": " << n_drafted << ",\n";
+    m << "    \"n_accepted_drafts\": " << n_accepted_drafts << ",\n";
+    m << "    \"n_bonus_samples\": " << n_bonus_samples << ",\n";
+    m << "    \"accept_rate\": " << accept_rate << ",\n";
+    m << "    \"prompt_ms\": " << prompt_ms << ",\n";
+    m << "    \"decode_ms\": " << decode_ms << ",\n";
+    m << "    \"total_ms\": " << total_ms << ",\n";
+    m << "    \"tok_per_s\": " << tok_per_s << "\n";
+    m << "  },\n";
+
+    m << "  \"rounds\": [";
+    for (std::size_t i = 0; i < this->rounds.size(); ++i) {
+      const auto &r = this->rounds[i];
+      if (i > 0) m << ",";
+      m << "\n    {\"n_drafted\": " << r.n_drafted
+        << ", \"n_accepted_drafts\": " << r.n_accepted_drafts
+        << ", \"rejected_pos\": " << r.rejected_pos << "}";
+    }
+    if (!this->rounds.empty()) m << "\n  ";
+    m << "]\n";
+    m << "}\n";
+    m.flush();
+    m.close();
+
+    std::error_code ec;
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+      throw std::runtime_error(std::format("failed to rename {} -> {}: {}",
+                                            tmp_path.string(), final_path.string(),
+                                            ec.message()));
+    }
+  }
+
+  static std::string fmt_double(double v) {
+    if (std::isnan(v)) return std::string{};
+    return std::format("{:.8g}", v);
+  }
+
+  static std::string json_escape(std::string_view s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    for (char c : s) {
+      switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          out += std::format("\\u{:04x}", (unsigned)c);
+        } else {
+          out += c;
+        }
+      }
+    }
+    return out;
+  }
+
+  std::filesystem::path run_dir;
+  std::string run_id_;
+  std::string started_at_;
+  Parameters params_snapshot_;
+  std::ofstream tokens;
+  std::vector<RoundSummary> rounds;
+  int step = 0;
+};
+// }}}
 
 class Application // {{{
 {
@@ -163,6 +391,9 @@ private:
   const struct llama_vocab *vocab_tgt = nullptr;
   const struct llama_vocab *vocab_dft = nullptr;
 
+  // p_draft for each token returned by the last call to draft(), parallel to the returned vector.
+  std::vector<double> last_draft_probs;
+
   void print_usage(char **argv) { // {{{
     const char *name = argv[0];
 
@@ -178,6 +409,12 @@ private:
     print(GGML_LOG_LEVEL_WARN, "  --draft-model <file>     gguf draft model file (required for speculative decoding)");
     print(GGML_LOG_LEVEL_WARN, "  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
     print(GGML_LOG_LEVEL_WARN, "  --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
+    print(GGML_LOG_LEVEL_WARN, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
+    print(GGML_LOG_LEVEL_WARN, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
+    print(GGML_LOG_LEVEL_WARN, "  --seed <n>               sampler seed (default: {})", this->params.seed);
+    print(GGML_LOG_LEVEL_WARN, "  --results-dir <path>     where to write meta.json + tokens.csv (default: \"{}\")", this->params.results_dir);
+    print(GGML_LOG_LEVEL_WARN, "  --run-id <id>            unique run identifier (default: auto-generated)");
+    print(GGML_LOG_LEVEL_WARN, "  --n-predict <n>          hard cap on generated tokens (0 = unlimited, default: {})", this->params.n_predict);
     print(GGML_LOG_LEVEL_WARN, "");
     print(GGML_LOG_LEVEL_WARN, "Example:");
     print(GGML_LOG_LEVEL_WARN, "  {} --target-model Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf --prompt \"Tell me a joke\" --ctx-size 8192 --n-gpu-layers 40", name);
@@ -244,6 +481,48 @@ private:
             print_usage(argv);
             throw std::runtime_error("Missing argument for top-k");
           }
+        } else if (std::strcmp(argv[i], "--seed") == 0) {
+          if (i + 1 < argc) {
+            this->params.seed = (uint32_t)std::stoul(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --seed");
+          }
+        } else if (std::strcmp(argv[i], "--results-dir") == 0) {
+          if (i + 1 < argc) {
+            this->params.results_dir = argv[++i];
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --results-dir");
+          }
+        } else if (std::strcmp(argv[i], "--run-id") == 0) {
+          if (i + 1 < argc) {
+            this->params.run_id = argv[++i];
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --run-id");
+          }
+        } else if (std::strcmp(argv[i], "--n-predict") == 0) {
+          if (i + 1 < argc) {
+            this->params.n_predict = std::stoll(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --n-predict");
+          }
+        } else if (std::strcmp(argv[i], "--n-max") == 0) {
+          if (i + 1 < argc) {
+            this->params.n_max = std::stoll(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --n-max");
+          }
+        } else if (std::strcmp(argv[i], "--n-min") == 0) {
+          if (i + 1 < argc) {
+            this->params.n_min = std::stoll(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --n-min");
+          }
         } else {
           print_usage(argv);
           throw std::runtime_error(std::format("Unknown argument: {}", argv[i]));
@@ -263,10 +542,14 @@ private:
     }
   } // }}}
 
+  // Compute (logit, prob) for `token` from a logits row, using `vocab` for the row width.
+  // Defaults to the target vocab for backward-compatibility with existing call sites.
   std::tuple<double, double> softmax( // {{{
       const float *logits_row,
-      const llama_token accepted) {
-    const int n_vocab = llama_vocab_n_tokens(this->vocab_tgt);
+      const llama_token token,
+      const struct llama_vocab *vocab = nullptr) {
+    if (vocab == nullptr) vocab = this->vocab_tgt;
+    const int n_vocab = llama_vocab_n_tokens(vocab);
 
     double max_logit = logits_row[0];
     for (int j = 1; j < n_vocab; ++j) {
@@ -280,7 +563,7 @@ private:
       denom += std::exp((double)logits_row[j] - max_logit);
     }
 
-    const llama_token tid = accepted;
+    const llama_token tid = token;
     const double logit = logits_row[tid];
     const double prob = std::exp((double)logit - max_logit) / denom;
 
@@ -494,7 +777,7 @@ private:
       llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_top_k(this->params.top_k));
       llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_top_p(this->params.top_p, 1));
       llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_temp(this->params.temp));
-      llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_dist(std::time(nullptr)));
+      llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_dist(this->params.seed));
     }
 
     if (this->params.speculative_decoding_is_enabled()) {
@@ -515,7 +798,7 @@ private:
         llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_top_k(this->params.top_k));
         llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_top_p(this->params.top_p, 1));
         llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_temp(this->params.temp));
-        llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_dist(std::time(nullptr)));
+        llama_sampler_chain_add(this->sampler_dft, llama_sampler_init_dist(this->params.seed));
       }
     }
 
@@ -548,16 +831,24 @@ private:
     llama_token current_token = -1;
     std::size_t tokens_decoded = 0;
 
-    const int64_t start = ggml_time_us();
+    int64_t n_bonus_samples = 0;
 
     print(GGML_LOG_LEVEL_INFO, "llama_model_chat_template:\n{}", llama_model_chat_template(this->model_tgt, NULL));
 
-    std::ofstream file("metrics.csv");
-    if (!file) {
-      throw std::runtime_error("failed to open file");
+    // Auto-generate a run-id if none was supplied.
+    if (this->params.run_id.empty()) {
+      const std::string ts = RunRecorder::iso_timestamp(/*compact=*/true);
+      const std::string mode = this->params.speculative_decoding_is_enabled() ? "spec" : "ar";
+      this->params.run_id = std::format("{}_{}_seed{}", ts, mode, this->params.seed);
     }
 
-    file << "step,logit,prob,logprob\n";
+    const std::string started_at = RunRecorder::iso_timestamp();
+    RunRecorder recorder(this->params.results_dir, this->params.run_id,
+                         started_at, this->params);
+    print(GGML_LOG_LEVEL_INFO, "writing structured run output to: {}", recorder.dir().string());
+
+    const int64_t t_start_total = ggml_time_us();
+    int64_t t_after_prompt = 0;
 
     if (this->params.speculative_decoding_is_enabled()) {
       print(GGML_LOG_LEVEL_INFO, "Speculative Decoding is enabled");
@@ -588,6 +879,7 @@ private:
       if (llama_decode(this->ctx_tgt, this->batch)) {
         throw std::runtime_error("failed to eval prompt prefix on target");
       }
+      t_after_prompt = ggml_time_us();
 
       // sample starting from the last token of the prompt
       this->last_token = this->prompt_tgt.back();
@@ -595,6 +887,7 @@ private:
 
       llama_memory_t mem_tgt = llama_get_memory(this->ctx_tgt);
 
+      int call_idx = 0;
       while (!this->params.has_eos) {
         // M-RoPE (Qwen3): batch positions must satisfy Y > X (where X = memory.seq_pos_max).
         // Tracking "pos" as prompt_tgt.size() drifts from real KV (e.g. X=21 vs Y=7).
@@ -644,10 +937,39 @@ private:
         this->params.n_drafted += (int64_t)draft.size();
         this->params.n_accept += (int64_t)accepted.size() - 1;
 
+        // Per-round summary: how many drafts matched before first rejection (or -1 if all accepted).
+        // accepted.size() == draft.size() + 1  iff every draft matched (the last entry is the bonus sample).
+        // otherwise accepted.back() is the resampled token at the mismatch position.
+        const int n_accepted_drafts_in_round = (int)accepted.size() - 1;
+        const int rejected_pos =
+            (accepted.size() == draft.size() + 1) ? -1 : n_accepted_drafts_in_round;
+        recorder.record_round((int)draft.size(), n_accepted_drafts_in_round, rejected_pos);
+        if (rejected_pos == -1) {
+          n_bonus_samples += 1;
+        }
+
         for (std::size_t i = 0; i < accepted.size(); ++i) {
           auto [logit, prob] = softmax(llama_get_logits_ith(this->ctx_tgt, (int32_t)i), accepted[i]);
           const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
-          file << tokens_decoded << ',' << logit << ',' << prob << ',' << logprob << '\n';
+
+          // Source labelling:
+          //   - draft   : positions [0, n_accepted_drafts_in_round) matched a draft token
+          //   - bonus   : the final entry when ALL drafts matched (target's free bonus sample)
+          //   - draft   : when there was a rejection, the last entry replaces the rejected draft
+          //               token at the mismatch position. We still attribute it to "draft" because
+          //               that position was drafted (just not accepted as-is). p_draft for that
+          //               position is the draft's probability on the token IT proposed there.
+          const bool is_bonus = (rejected_pos == -1) && (i + 1 == accepted.size());
+          const char *source = is_bonus ? "bonus" : "draft";
+          const int pos_in_draft = is_bonus ? -1 : (int)i;
+          const double p_draft = (!is_bonus && pos_in_draft >= 0 &&
+                                  pos_in_draft < (int)this->last_draft_probs.size())
+                                     ? this->last_draft_probs[(std::size_t)pos_in_draft]
+                                     : std::numeric_limits<double>::quiet_NaN();
+
+          recorder.record_token(
+              call_idx, source, pos_in_draft, (int)accepted[i],
+              prob, p_draft, logit, logprob);
 
           this->prompt_tgt.push_back(this->last_token);
           this->last_token = accepted[i];
@@ -656,6 +978,12 @@ private:
           if (llama_vocab_is_eog(this->vocab_tgt, this->last_token)) {
             this->params.has_eos = true;
             break;
+          }
+
+          // hard cap on tokens (treated like EOS for the purposes of clean finalize)
+          if (this->params.n_predict > 0 &&
+              (int64_t)(tokens_decoded + 1) >= this->params.n_predict) {
+            this->params.has_eos = true;
           }
 
           char buf[128] = {0};
@@ -683,15 +1011,19 @@ private:
         }
 
         llama_memory_seq_rm(mem_tgt, 0, n_past, -1);
+        call_idx += 1;
       }
 
       std::cout << std::endl;
 
-      const int64_t end = ggml_time_us();
-      const float delta = (end - start) / 1000000.0f;
-      const float speed = tokens_decoded / std::max(delta, 1e-6f);
+      const int64_t t_end = ggml_time_us();
+      const double prompt_ms = (t_after_prompt - t_start_total) / 1000.0;
+      const double decode_ms = (t_end - t_after_prompt) / 1000.0;
+      const float speed = tokens_decoded / std::max((float)(decode_ms / 1000.0), 1e-6f);
 
-      print(GGML_LOG_LEVEL_INFO, "decoded {} tokens in {} s, speed: {} t/s", tokens_decoded, delta, speed);
+      print(GGML_LOG_LEVEL_INFO,
+            "decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
+            tokens_decoded, decode_ms / 1000.0, speed, prompt_ms, decode_ms);
 
       if (this->params.n_drafted > 0) {
         print(GGML_LOG_LEVEL_INFO,
@@ -700,16 +1032,30 @@ private:
               100.0 * (double)this->params.n_accept / (double)this->params.n_drafted);
       }
 
+      recorder.finalize((int64_t)tokens_decoded,
+                        this->params.n_drafted,
+                        this->params.n_accept,
+                        n_bonus_samples,
+                        prompt_ms, decode_ms);
+      print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
+            (recorder.dir() / "meta.json").string(),
+            (recorder.dir() / "tokens.csv").string());
+
       llama_perf_sampler_print(this->sampler_tgt);
       llama_perf_context_print(this->ctx_tgt);
       llama_perf_context_print(this->ctx_dft);
       return;
     }
 
+    bool first_iteration = true;
     for (;;) {
       // evaluate the batch (aka update KV cache and compute logits for the batch)
       if (llama_decode(this->ctx_tgt, batch)) {
         throw std::runtime_error("failed to eval");
+      }
+      if (first_iteration) {
+        t_after_prompt = ggml_time_us();
+        first_iteration = false;
       }
 
       // sample and accept the last token of the last evaluation (the next token)
@@ -717,7 +1063,10 @@ private:
 
       auto [logit, prob] = softmax(llama_get_logits_ith(this->ctx_tgt, -1), current_token);
       const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
-      file << tokens_decoded << ',' << logit << ',' << prob << ',' << logprob << '\n';
+      recorder.record_token(
+          (int)tokens_decoded, "ar", -1, (int)current_token,
+          prob, std::numeric_limits<double>::quiet_NaN(),
+          logit, logprob);
 
       // is it an end of generation?
       if (llama_vocab_is_eog(this->vocab_tgt, current_token)) {
@@ -736,16 +1085,34 @@ private:
       batch = llama_batch_get_one(&current_token, 1);
 
       tokens_decoded += 1;
+
+      // hard cap on tokens
+      if (this->params.n_predict > 0 &&
+          (int64_t)tokens_decoded >= this->params.n_predict) {
+        break;
+      }
     }
 
     std::cout << std::endl;
 
-    const int64_t end = ggml_time_us();
+    const int64_t t_end = ggml_time_us();
+    const double prompt_ms = t_after_prompt > 0 ? (t_after_prompt - t_start_total) / 1000.0 : 0.0;
+    const double decode_ms = t_after_prompt > 0 ? (t_end - t_after_prompt) / 1000.0
+                                                : (t_end - t_start_total) / 1000.0;
+    const float speed = tokens_decoded / std::max((float)(decode_ms / 1000.0), 1e-6f);
 
-    const float delta = (end - start) / 1000000.0f;
-    const float speed = tokens_decoded / std::max(delta, 1e-6f);
+    print(GGML_LOG_LEVEL_INFO,
+          "decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
+          tokens_decoded, decode_ms / 1000.0, speed, prompt_ms, decode_ms);
 
-    print(GGML_LOG_LEVEL_INFO, "decoded {} tokens in {} s, speed: {} t/s", tokens_decoded, delta, speed);
+    recorder.finalize((int64_t)tokens_decoded,
+                      /*n_drafted=*/0,
+                      /*n_accepted_drafts=*/0,
+                      /*n_bonus_samples=*/0,
+                      prompt_ms, decode_ms);
+    print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
+          (recorder.dir() / "meta.json").string(),
+          (recorder.dir() / "tokens.csv").string());
 
     // __asm volatile("int3");
     llama_perf_sampler_print(this->sampler_tgt);
@@ -933,6 +1300,9 @@ private:
     // clean up
     llama_sampler_reset(this->sampler_dft);
 
+    this->last_draft_probs.clear();
+    this->last_draft_probs.reserve((std::size_t)this->params.n_max);
+
     for (int i = 0; i < this->params.n_max; ++i) {
       // just like the sample_and_accept method
       // only this time we need to be careful to not surpass n_max
@@ -942,6 +1312,16 @@ private:
       // turn logits into one chosen token
       // given the current logits, pick a token
       const llama_token accepted_token = llama_sampler_sample(this->sampler_dft, this->ctx_dft, 0);
+
+      // capture the draft's probability mass on the token it just sampled
+      // (this is what `p_draft` means in tokens.csv — useful for KL/TV against p_target)
+      {
+        const float *dft_logits = llama_get_logits_ith(this->ctx_dft, 0);
+        auto [_logit, p_d] = this->softmax(dft_logits, accepted_token, this->vocab_dft);
+        (void)_logit;
+        this->last_draft_probs.push_back(p_d);
+      }
+
       // that token is now part of the sequence, update internal state
       llama_sampler_accept(this->sampler_dft, accepted_token);
       result.push_back(accepted_token);
