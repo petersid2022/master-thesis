@@ -1,0 +1,17 @@
+
+                 <---                             
+|                                                |
+|                    tokens                      |
+|                                                |
+|                                    | | pattern |
+|                                    | |         |
+|                                    | |         |
+0                                    | |         49                 if (x != m) then { match = false }
+v                                    | |         v                  x == m for the (match_pos)th token
+-------------------------------x-------------m----
+                               ^      ^
+                              31      38
+                         match_pos  n-gram
+
+n-gram = 12
+m-gram = 8
