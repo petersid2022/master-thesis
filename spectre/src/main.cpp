@@ -233,9 +233,7 @@ private:
 
     m << "  \"config\": {\n";
     m << "    \"tgt_model_path\": \"" << json_escape(p.tgt_model_path) << "\",\n";
-    m << "    \"dft_model_path\": " << (p.dft_model_path.empty()
-                                            ? "null"
-                                            : ("\"" + json_escape(p.dft_model_path) + "\""))
+    m << "    \"dft_model_path\": " << (p.dft_model_path.empty() ? "null" : ("\"" + json_escape(p.dft_model_path) + "\""))
       << ",\n";
     m << "    \"speculative\": " << (p.dft_model_path.empty() ? "false" : "true") << ",\n";
     m << "    \"ctx\": " << p.ctx << ",\n";
@@ -282,8 +280,8 @@ private:
     std::filesystem::rename(tmp_path, final_path, ec);
     if (ec) {
       throw std::runtime_error(std::format("failed to rename {} -> {}: {}",
-                                            tmp_path.string(), final_path.string(),
-                                            ec.message()));
+                                           tmp_path.string(), final_path.string(),
+                                           ec.message()));
     }
   }
 
@@ -297,11 +295,21 @@ private:
     out.reserve(s.size() + 2);
     for (char c : s) {
       switch (c) {
-      case '"':  out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
       default:
         if (static_cast<unsigned char>(c) < 0x20) {
           out += std::format("\\u{:04x}", (unsigned)c);
