@@ -82,7 +82,7 @@
       </div>
 
       <h2 class="section-title">Browse the figures</h2>
-      <p class="section-sub">Two pages, both rendered in the browser, both printable to PDF.</p>
+      <p class="section-sub">Three pages, all rendered in the browser, all printable to PDF.</p>
       <div class="cards">
         <a class="card" href="atlas.html">
           <h2>Conceptual atlas</h2>
@@ -93,14 +93,23 @@
           </p>
           <p class="meta">atlas.html - sidebar nav, print-friendly</p>
         </a>
+        <a class="card" href="quant.html">
+          <h2><span class="badge new">new</span>GGUF &amp; quantization</h2>
+          <p>
+            7 visuals: GGUF on-disk layout, HF→GGUF pipeline, Q4_K super-block anatomy,
+            K-quant vs I-quant, memory-bandwidth bottleneck chart, quality/size Pareto,
+            SD × quantization interplay.
+          </p>
+          <p class="meta">quant.html - quantization motivation slides</p>
+        </a>
         <a class="card" href="quality.html">
-          <h2><span class="badge new">new</span>Quality results</h2>
+          <h2>Quality results</h2>
           <p>
             7 data-driven figures from <code>results/spectre/&lt;run-id&gt;/{meta.json,tokens.csv}</code>:
-            losslessness check, target-prob histogram, acceptance bar chart, speed-acceptance
-            frontier, per-position decay model.
+            losslessness check, target-prob histogram, acceptance bar, speed-acceptance
+            frontier, per-position decay, p_draft vs p_target, accepted-per-call.
           </p>
-          <p class="meta">quality.html - Tuesday talk add-on</p>
+          <p class="meta">quality.html - presentation results section</p>
         </a>
       </div>
 
@@ -127,13 +136,26 @@
           <img src="png/quality-per-position-empirical.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>5.</strong> Empirical per-position acceptance + Bernoulli model</span>
         </a>
-        <a class="thumb" href="quality.html#per-position">
+        <a class="thumb" href="quality.html#draft-vs-target">
           <img src="png/quality-draft-vs-target-prob.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>6.</strong> p_draft vs. p_target on accepted tokens</span>
         </a>
-        <a class="thumb" href="quality.html#per-position">
+        <a class="thumb" href="quality.html#rounds">
           <img src="png/quality-rounds-histogram.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>7.</strong> Accepted-per-call histogram + geometric overlay</span>
+        </a>
+      </div>
+
+      <h2 class="section-title"><span class="badge new" style="vertical-align: middle">new</span> GGUF &amp; quantization - at a glance</h2>
+      <p class="section-sub">Static visuals from <code>spectre/scripts/quant_charts.py</code> (no benchmark data needed).</p>
+      <div class="thumb-grid">
+        <a class="thumb" href="quant.html#bandwidth">
+          <img src="png/quant-bandwidth.png" alt="" onerror="this.parentNode.style.display='none'" />
+          <span class="caption"><strong>Q1.</strong> Memory-bandwidth bottleneck: F16 → Q2_K read time + throughput</span>
+        </a>
+        <a class="thumb" href="quant.html#pareto">
+          <img src="png/quant-pareto.png" alt="" onerror="this.parentNode.style.display='none'" />
+          <span class="caption"><strong>Q2.</strong> Quality / size Pareto frontier (PPL Δ% vs bytes/weight)</span>
         </a>
       </div>
 

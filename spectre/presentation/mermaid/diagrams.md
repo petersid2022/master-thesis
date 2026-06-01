@@ -108,3 +108,100 @@ mindmap
       hot n-grams
       JIT analogy
 ```
+
+---
+
+# GGUF file format
+
+## On-disk layout (memory-mappable)
+
+```mermaid
+flowchart TB
+  classDef hdr  fill:#fef3c7,stroke:#b45309,color:#0f172a
+  classDef meta fill:#dbeafe,stroke:#1e40af,color:#0f172a
+  classDef ti   fill:#e0f2fe,stroke:#0369a1,color:#0f172a
+  classDef td   fill:#dcfce7,stroke:#166534,color:#0f172a
+
+  subgraph FILE[".gguf file (little-endian, mmap'd at load)"]
+    direction TB
+    H["Header<br/>magic 'GGUF' | version | n_tensors | n_meta_kv"]:::hdr
+    KV["Metadata KV map<br/>general.architecture = llama<br/>llama.embedding_length = 4096<br/>llama.context_length = 8192<br/>tokenizer.ggml.tokens = [...]<br/>quantization_version = 2"]:::meta
+    TI["Tensor info table (per tensor)<br/>name | n_dims | shape | ggml_type | data_offset"]:::ti
+    PAD["alignment padding (to 32-byte multiple)"]:::meta
+    TD["Tensor data blob<br/>raw block-quantized weights, contiguous<br/>mmap'd directly into GPU/CPU pages"]:::td
+
+    H --> KV --> TI --> PAD --> TD
+  end
+
+  LOAD["llama_model_load_from_file<br/>parses header + KV + tensor info,<br/>mmaps tensor data (no copy)"]
+  FILE --> LOAD
+```
+
+## Conversion pipeline (HF -> GGUF -> quantized)
+
+```mermaid
+flowchart LR
+  HF["HuggingFace repo<br/>model.safetensors (BF16/FP16)<br/>config.json, tokenizer.*"]
+  CV["convert_hf_to_gguf.py<br/>(reads HF layout,<br/>emits GGUF metadata + FP16 tensors)"]
+  F16[".gguf F16<br/>(reference, ~2 bytes/weight)"]
+  QZ["llama-quantize in.gguf out.gguf Q4_K_M<br/>(per-tensor block quantization)"]
+  OUT[".gguf Q4_K_M<br/>(~0.55 bytes/weight, ~28% size)"]
+
+  HF --> CV --> F16 --> QZ --> OUT
+
+  IMAT["llama-imatrix --calibration-corpus C4<br/>-> imatrix.dat (importance per weight col)"]
+  IMAT -. required for IQ_* quants .-> QZ
+```
+
+## Inside one Q4_K super-block (256 weights, 144 bytes)
+
+```mermaid
+flowchart TB
+  subgraph SB["Super-block (256 weights, 144 bytes total)"]
+    direction TB
+    SS["d : FP16 (2 B) - super scale"]
+    SM["dmin : FP16 (2 B) - super min"]
+    SC["8x 6-bit sub-scales + 8x 6-bit sub-mins (12 B)"]
+    QS["8 sub-blocks x 32 weights x 4 bits = 128 B"]
+  end
+
+  subgraph SUB["One sub-block (32 weights)"]
+    direction TB
+    QQ["each weight: q_i in [0..15] (4 bits)"]
+    REC["reconstruct: w_i ≈ d · scale_j · q_i + dmin · min_j<br/>(j = sub-block index)"]
+    QQ --> REC
+  end
+
+  QS --> SUB
+
+  NOTE["effective ≈ 144 x 8 / 256 = 4.5 bits/weight<br/>FP16 = 16 bits -> 3.6x smaller"]
+  SB --> NOTE
+```
+
+## K-quant vs I-quant
+
+```mermaid
+flowchart LR
+  classDef k fill:#dbeafe,stroke:#1e40af,color:#0f172a
+  classDef i fill:#fee2e2,stroke:#b91c1c,color:#0f172a
+
+  subgraph KQ["K-quant"]
+    K1["block of 32 weights"]:::k
+    K2["uniform: all 32 share<br/>same bit budget"]:::k
+    K3["one scale + one min per block"]:::k
+    K4["simple SIMD dequant (fast on CPU/GPU)"]:::k
+    K1 --> K2 --> K3 --> K4
+  end
+
+  subgraph IQ["I-quant (imatrix-aware)"]
+    I0["offline: imatrix records<br/>sum activation^2 per column"]:::i
+    I1["block of 32 weights"]:::i
+    I2["important cols -> finer lattice<br/>unimportant cols -> coarser lattice"]:::i
+    I3["LUT-based dequant (slower kernel)"]:::i
+    I0 --> I1 --> I2 --> I3
+  end
+
+  KQ -. same bit budget .-> IQ
+  IQ -. lower PPL at <=4 bits .-> WIN["IQ wins quality at low bits<br/>K wins raw decode speed"]
+```
+

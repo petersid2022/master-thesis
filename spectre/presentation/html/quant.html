@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spectre - GGUF &amp; quantization</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/thesis-figures.css" />
+    <style>
+      figure.diagram img { width: 100%; height: auto; display: block; border-radius: 6px; background: white; }
+      table.compact { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; font-size: 0.92rem; }
+      table.compact th, table.compact td { padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
+      table.compact th { color: var(--muted); font-weight: 600; }
+      table.compact td.num { font-variant-numeric: tabular-nums; text-align: right; }
+      .takeaway { background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+                  border-left: 4px solid var(--accent); padding: 0.8rem 1rem; border-radius: 0 6px 6px 0;
+                  margin: 1rem 0 1.5rem; font-size: 0.95rem; }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>GGUF &amp; quantization</h1>
+        <nav>
+          <a href="#gguf-layout">1. GGUF file layout</a>
+          <a href="#gguf-pipeline">2. HF → GGUF pipeline</a>
+          <a href="#block">3. Inside a Q4_K super-block</a>
+          <a href="#k-vs-i">4. K-quant vs I-quant</a>
+          <a href="#bandwidth">5. Why: memory bandwidth</a>
+          <a href="#pareto">6. Quality vs size Pareto</a>
+          <a href="#sd-interplay">7. SD × quantization</a>
+        </nav>
+        <p class="note" style="margin-top: 1rem">
+          See also <a href="atlas.html">Atlas</a>,
+          <a href="quality.html">Quality results</a>,
+          <a href="index.html">dashboard</a>.
+        </p>
+      </aside>
+
+      <main>
+        <a class="back" href="index.html">&larr; Index</a>
+
+        <article id="gguf-layout">
+          <h2>1. GGUF on-disk layout</h2>
+          <p class="lead">
+            GGUF is a self-contained, memory-mappable container: header + metadata KV map +
+            tensor info table + raw tensor blob. <code>llama.cpp</code> mmaps the tensor
+            data region directly into pages the matmul kernels read from - no copy, no
+            deserialization step per inference.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  classDef hdr  fill:#fef3c7,stroke:#b45309,color:#0f172a
+  classDef meta fill:#dbeafe,stroke:#1e40af,color:#0f172a
+  classDef ti   fill:#e0f2fe,stroke:#0369a1,color:#0f172a
+  classDef td   fill:#dcfce7,stroke:#166534,color:#0f172a
+
+  subgraph FILE["`.gguf file (little-endian, mmap'd at load)`"]
+    direction TB
+    H["`Header<br/>magic 'GGUF' | version | n_tensors | n_meta_kv`"]:::hdr
+    KV["`Metadata KV map<br/>general.architecture = llama<br/>llama.embedding_length = 4096<br/>llama.context_length = 8192<br/>tokenizer.ggml.tokens = [...]<br/>quantization_version = 2`"]:::meta
+    TI["`Tensor info table (one row per tensor)<br/>name | n_dims | shape | ggml_type | data_offset`"]:::ti
+    PAD["`alignment padding (to 32-byte multiple)`"]:::meta
+    TD["`Tensor data blob<br/>raw block-quantized weights, contiguous<br/>mmap'd directly into GPU/CPU pages`"]:::td
+
+    H --> KV --> TI --> PAD --> TD
+  end
+
+  LOAD["`llama_model_load_from_file<br/>parses header + KV + tensor info,<br/>mmaps tensor data (no copy)`"]
+  FILE --> LOAD
+            </pre>
+            <figcaption>
+              <strong>Figure 1.</strong> The metadata KV section is what makes GGUF
+              self-describing: the architecture, tokenizer, all hyperparameters, and the
+              chat template all live in one place. <em>Nothing</em> outside the file is
+              needed at load time.
+            </figcaption>
+          </figure>
+          <div class="takeaway">
+            <strong>Contrast with safetensors:</strong> safetensors only stores the raw
+            tensors + a small JSON header (tensor names, dtypes, offsets). Everything else
+            - tokenizer, config, chat template - lives in separate JSON files. GGUF folds
+            all of that into one file, which is why a model is "one .gguf".
+          </div>
+        </article>
+
+        <article id="gguf-pipeline">
+          <h2>2. Conversion pipeline: HF → GGUF → quantized</h2>
+          <p class="lead">
+            Authors publish on HuggingFace as <code>safetensors</code> in BF16 or FP16.
+            The path to a usable <code>.gguf</code> is two scripts that ship with
+            <code>llama.cpp</code>.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  HF["`HuggingFace repo<br/>model.safetensors (BF16/FP16)<br/>config.json, tokenizer.*`"]
+  CV["`convert_hf_to_gguf.py<br/>(reads HF layout,<br/>emits GGUF metadata + FP16 tensors)`"]
+  F16["`.gguf F16<br/>(reference, ~2 bytes/weight)`"]
+  QZ["`llama-quantize in.gguf out.gguf Q4_K_M<br/>(per-tensor block quantization)`"]
+  OUT["`.gguf Q4_K_M<br/>(~0.55 bytes/weight, ~28% size)`"]
+
+  HF --> CV --> F16 --> QZ --> OUT
+
+  IMAT["`llama-imatrix --calibration-corpus C4<br/>-> imatrix.dat (importance per weight col)`"]
+  IMAT -. required for IQ_* quants .-> QZ
+            </pre>
+            <figcaption>
+              <strong>Figure 2.</strong> All three local models in <code>models/</code> were
+              produced this way. The F16 intermediate is itself a valid <code>.gguf</code>
+              you can run - <code>Nemotron-3-Nano-4B-BF16.gguf</code> is essentially the
+              output of step 2 with no step-3 quantization.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="block">
+          <h2>3. Inside one Q4_K super-block (256 weights → 144 bytes)</h2>
+          <p class="lead">
+            "Block-wise scaling" is the central trick. Instead of one global scale per
+            tensor (which gets blown up by outliers), Q4_K groups weights hierarchically
+            and keeps per-group scales. The accountancy below explains where the
+            "4.5 bits per weight effective" number for Q4_K_M comes from.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TB
+  subgraph SB["`Super-block: 256 weights, 144 bytes total`"]
+    direction TB
+    SS["`d : FP16 (2 B) - super scale`"]
+    SM["`dmin : FP16 (2 B) - super min`"]
+    SC["`8x 6-bit sub-scales + 8x 6-bit sub-mins (12 B)`"]
+    QS["`8 sub-blocks x 32 weights x 4 bits = 128 B`"]
+  end
+
+  subgraph SUB["`One sub-block (32 weights)`"]
+    direction TB
+    QQ["`each weight: q_i in [0..15]  (4 bits)`"]
+    REC["`reconstruct: w_i ≈ d · scale_j · q_i + dmin · min_j<br/>(j = sub-block index)`"]
+    QQ --> REC
+  end
+
+  QS --> SUB
+
+  NOTE["`effective ≈ 144 x 8 / 256 = 4.5 bits/weight<br/>FP16 = 16 bits -> 3.6x smaller<br/>FP32 = 32 bits -> 7.1x smaller`"]
+  SB --> NOTE
+            </pre>
+            <figcaption>
+              <strong>Figure 3.</strong> Q4_K_M = "Q4_K with critical layers bumped" -
+              attention output projections and the unembedding matrix stay at Q6_K or
+              higher. That's the <strong>M</strong> suffix; <strong>S</strong> keeps them
+              at Q4_K (smaller, slight quality drop), <strong>L</strong> bumps them
+              further (mostly not worth it).
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="k-vs-i">
+          <h2>4. K-quant vs I-quant intuition</h2>
+          <p class="lead">
+            K-quants spend the same bit budget on every weight in a block; I-quants spend
+            <em>more</em> bits on weights the calibration pass identifies as important.
+            Same total bytes, different per-weight precision distribution.
+          </p>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  classDef k fill:#dbeafe,stroke:#1e40af,color:#0f172a
+  classDef i fill:#fee2e2,stroke:#b91c1c,color:#0f172a
+
+  subgraph KQ["`K-quant`"]
+    K1["`block of 32 weights`"]:::k
+    K2["`uniform: all 32 share<br/>same bit budget`"]:::k
+    K3["`one scale + one min per block`"]:::k
+    K4["`simple SIMD dequant (fast on CPU/GPU)`"]:::k
+    K1 --> K2 --> K3 --> K4
+  end
+
+  subgraph IQ["`I-quant (imatrix-aware)`"]
+    I0["`offline: imatrix records<br/>sum activation^2 per column`"]:::i
+    I1["`block of 32 weights`"]:::i
+    I2["`important cols -> finer lattice<br/>unimportant cols -> coarser lattice`"]:::i
+    I3["`LUT-based dequant (slower kernel)`"]:::i
+    I0 --> I1 --> I2 --> I3
+  end
+
+  KQ -. same bit budget .-> IQ
+  IQ -. lower PPL at ≤4 bits .-> WIN["`IQ wins quality at low bits<br/>K wins raw decode speed`"]
+            </pre>
+            <figcaption>
+              <strong>Figure 4.</strong> Rule of thumb: at 4 bits and below prefer
+              <code>IQ_*</code>; at 5 bits and above use <code>Q_K_M</code>. Our
+              <code>Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf</code> is exactly the regime where
+              I-quants pay off - K-quant at 2 bits is essentially unusable.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="bandwidth">
+          <h2>5. Why quantize at all: memory bandwidth is the bottleneck</h2>
+          <p class="lead">
+            For one token from a 7B model on an A100: compute finishes in ~45&nbsp;μs;
+            moving the weights takes ~7&nbsp;ms. The GPU sits idle 99% of the time waiting
+            on memory. Quantization doesn't change the math; it shrinks the bytes that have
+            to move.
+          </p>
+          <figure class="diagram">
+            <img src="png/quant-bandwidth.png" alt="Memory bandwidth vs compute time" onerror="this.closest('figure').style.display='none'" />
+            <figcaption>
+              <strong>Figure 5.</strong> Reference scenario: 7B model, A100 (2 TB/s HBM,
+              312 TFLOP/s FP16). Compute is constant (~45 μs) across all bit widths because
+              dequant happens on-the-fly to FP16/BF16 in the kernel. The memory bar shrinks
+              linearly with bits/weight, and since memory dominates ~150× over compute, the
+              throughput speedup is near-linear too. Run
+              <code>python3 spectre/scripts/quant_charts.py</code> to regenerate.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="pareto">
+          <h2>6. Quality vs size Pareto curve</h2>
+          <p class="lead">
+            PPL Δ% on a held-out corpus vs bytes/weight. Above 4 bits the quality loss is
+            within sampling noise; below 3 bits, reasoning chains start breaking; below 2
+            bits, only useful when "model doesn't load otherwise" is the alternative.
+          </p>
+          <figure class="diagram">
+            <img src="png/quant-pareto.png" alt="Perplexity delta vs bytes per weight" onerror="this.closest('figure').style.display='none'" />
+            <figcaption>
+              <strong>Figure 6.</strong> The classical "go bigger then quantize" wisdom
+              follows directly: a 70B model at Q4_K_M (~27 GB) routinely beats a 13B at FP16
+              (~26 GB) on both quality and speed. The cliff between Q2 and IQ1 is where you
+              stop trading off and start losing the model.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="sd-interplay">
+          <h2>7. How quantization interacts with speculative decoding</h2>
+          <p class="lead">
+            Quantization and SD attack the <em>same</em> bottleneck (memory bandwidth) from
+            different angles. They compose multiplicatively, which is the whole reason this
+            thesis exists.
+          </p>
+          <table class="compact">
+            <thead>
+              <tr><th>Lever</th><th>What it reduces</th><th>Typical speedup</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Quantization (Q4_K_M vs FP16)</td><td>bytes per weight</td><td class="num">~3.7×</td></tr>
+              <tr><td>Speculative decoding (good acceptance)</td><td>weight-reads per output token</td><td class="num">~2-3×</td></tr>
+              <tr><td><strong>Combined</strong></td><td>both</td><td class="num"><strong>~8-11×</strong></td></tr>
+            </tbody>
+          </table>
+          <div class="takeaway">
+            <strong>Self-speculative decoding</strong> (the Nemotron BF16 + Q8_0 pair in
+            <code>models/</code>) collapses both ideas into one: the draft <em>is</em> the
+            target, just at lower precision. The Q8 draft is ~50% faster to decode but
+            produces nearly identical distributions, so acceptance is very high - quant
+            choice <em>is</em> the speedup knob.
+          </div>
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart LR
+  classDef q  fill:#fef3c7,stroke:#b45309,color:#0f172a
+  classDef sd fill:#e6faf0,stroke:#276749,color:#0f172a
+
+  Q1["`Quantization<br/>fewer bytes per weight`"]:::q
+  S1["`Speculative decoding<br/>fewer weight-reads per output token`"]:::sd
+  BW["`Memory bandwidth bottleneck<br/>(99% idle waiting on weights)`"]
+  OUT["`combined wall-clock speedup`"]
+
+  Q1 --> BW
+  S1 --> BW
+  BW --> OUT
+            </pre>
+            <figcaption>
+              <strong>Figure 7.</strong> The
+              <a href="quality.html#frontier">speed-vs-acceptance frontier</a> is plotted
+              against a Q8_0-quantized target. The baseline is already faster than an FP16
+              target would be; SD compounds the gain.
+            </figcaption>
+          </figure>
+        </article>
+
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+    <script>
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "base",
+        securityLevel: "loose",
+        themeVariables: {
+          primaryColor: "#e8f4fc",
+          primaryTextColor: "#1a202c",
+          primaryBorderColor: "#2b6cb0",
+          secondaryColor: "#e6faf0",
+          secondaryBorderColor: "#276749",
+          tertiaryColor: "#fff7e6",
+          lineColor: "#4a5568",
+          fontFamily: "Source Sans 3, system-ui, sans-serif",
+          fontSize: "15px",
+        },
+        flowchart: { htmlLabels: true, curve: "basis", padding: 14, nodeSpacing: 50, rankSpacing: 55, wrappingWidth: 300 },
+      });
+    </script>
+  </body>
+</html>

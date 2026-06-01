@@ -39,7 +39,14 @@
           <a href="#acceptance">3. Acceptance per speculator</a>
           <a href="#frontier">4. Speed-acceptance frontier</a>
           <a href="#per-position">5. Per-position decay</a>
+          <a href="#draft-vs-target">6. p_draft vs p_target</a>
+          <a href="#rounds">7. Accepted-per-call</a>
         </nav>
+        <p class="note" style="margin-top: 1rem">
+          See also <a href="atlas.html">Atlas</a>,
+          <a href="quant.html">GGUF / quantization</a>,
+          <a href="index.html">dashboard</a>.
+        </p>
       </aside>
 
       <main>
@@ -139,6 +146,45 @@
               (AdaEDL, SpecDec++): static k is always a compromise; per-token confidence
               gating wins. Fitted <code>p̂</code>: ngram_cache 0.63, chain (all 5) 0.46,
               ngram_simple / smart pick 0.14.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="draft-vs-target">
+          <h2>6. p_draft vs. p_target on accepted tokens</h2>
+          <p class="lead">
+            Per-accepted-token scatter: target probability on the x-axis, draft probability
+            on the y-axis. The closer to the diagonal, the more <code>q</code> agrees with
+            <code>p</code> - and by <code>E[α] = 1 − TV(p, q)</code>, that's exactly what
+            sets the acceptance ceiling.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-draft-vs-target-prob.png" alt="p_draft vs p_target scatter on accepted tokens" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure 6.</strong> Points above the diagonal are draft over-confidence
+              (acceptance still possible but the residual probability that mass goes
+              elsewhere); points below are draft under-confidence (always accepted by the
+              <code>min(1, p/q)</code> rule). For n-gram speculators, <code>p_draft</code>
+              is omitted (the speculator returns a single token id, not a distribution).
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="rounds">
+          <h2>7. Distribution of accepted-per-call</h2>
+          <p class="lead">
+            How many of the <code>k</code> drafted tokens does each round actually keep?
+            Under the independent-Bernoulli model with parameter <code>p̂</code>, this
+            follows a truncated geometric distribution. Heavy mass at <code>0</code> means
+            the speculator wasted its draft.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-rounds-histogram.png" alt="Histogram of accepted tokens per speculative call with geometric overlay" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure 7.</strong> The empirical histogram overlaid with the geometric
+              model from Figure 5's fitted <code>p̂</code>. Deviations indicate where the
+              independent-Bernoulli assumption breaks down (typically: correlated rejections
+              clustered around hard tokens).
             </figcaption>
           </figure>
         </article>
