@@ -8,7 +8,7 @@ Hand-drawn style diagrams for slides: [excalidraw.com](https://excalidraw.com) (
 2. Export SVG or PNG from Mermaid Live.
 3. In Excalidraw: **Menu → Import** and drop the image, *or* use it as a reference and redraw with arrows you can nudge by hand.
 
-Some Excalidraw builds also support Mermaid import from the command palette — check **Help** for “Mermaid” if your version has it.
+Some Excalidraw builds also support Mermaid import from the command palette - check **Help** for “Mermaid” if your version has it.
 
 ## Starter file
 

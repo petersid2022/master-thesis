@@ -91,28 +91,28 @@
             init, draft window, <code>sample_and_accept</code>, KV rollback, vocab checks,
             future-work roadmap.
           </p>
-          <p class="meta">atlas.html — sidebar nav, print-friendly</p>
+          <p class="meta">atlas.html - sidebar nav, print-friendly</p>
         </a>
         <a class="card" href="quality.html">
           <h2><span class="badge new">new</span>Quality results</h2>
           <p>
             7 data-driven figures from <code>results/spectre/&lt;run-id&gt;/{meta.json,tokens.csv}</code>:
-            losslessness check, target-prob histogram, acceptance bar chart, speed–acceptance
+            losslessness check, target-prob histogram, acceptance bar chart, speed-acceptance
             frontier, per-position decay model.
           </p>
-          <p class="meta">quality.html — Tuesday talk add-on</p>
+          <p class="meta">quality.html - Tuesday talk add-on</p>
         </a>
         <a class="card" href="../quality_eval_slides.md">
           <h2><span class="badge new">new</span>Slide outline</h2>
           <p>
             8-slide outline with body text, figure references, and speaker notes.
-            Markdown — open in any editor or paste into your deck of choice.
+            Markdown - open in any editor or paste into your deck of choice.
           </p>
           <p class="meta">../quality_eval_slides.md</p>
         </a>
       </div>
 
-      <h2 class="section-title">Quality results — at a glance</h2>
+      <h2 class="section-title">Quality results - at a glance</h2>
       <p class="section-sub">Click any thumbnail to open the dedicated page. Missing figures hide themselves until you regenerate them.</p>
       <div class="thumb-grid">
         <a class="thumb" href="quality.html#losslessness">
@@ -148,13 +148,13 @@
       <h2 class="section-title">Code &amp; data</h2>
       <p class="section-sub">The pieces that produced everything above.</p>
       <ul class="code-list">
-        <li><a href="../../src/main.cpp">spectre/src/main.cpp</a><span class="desc">— custom libllama speculative decoder with structured-output instrumentation</span></li>
-        <li><a href="../../../results/spectre/">results/spectre/&lt;run-id&gt;/</a><span class="desc">— per-run <code>meta.json</code> + <code>tokens.csv</code>; one directory per spectre invocation</span></li>
-        <li><a href="../../scripts/quality_eval.py">spectre/scripts/quality_eval.py</a><span class="desc">— builds the 7 quality figures from <code>results/spectre/*/</code></span></li>
-        <li><a href="../../scripts/benchmark.sh">spectre/scripts/benchmark.sh</a><span class="desc">— sweeps the spectre binary over (seed × n_max); writes <code>results/spectre/&lt;run-id&gt;/</code></span></li>
-        <li><a href="../../scripts/README.md">spectre/scripts/README.md</a><span class="desc">— pipeline overview + model-pair guidance</span></li>
-        <li><a href="../../../llama_cpp_benchmark.sh">llama_cpp_benchmark.sh</a><span class="desc">— llama-server benchmark across all <code>--spec-type</code> values (separate engine; logs in <code>logs/</code>)</span></li>
-        <li><a href="../../../llama_cpp_benchmark_speculative.sh">llama_cpp_benchmark_speculative.sh</a><span class="desc">— llama-server speculative variants of the above</span></li>
+        <li><a href="../../src/main.cpp">spectre/src/main.cpp</a><span class="desc">- custom libllama speculative decoder with structured-output instrumentation</span></li>
+        <li><a href="../../../results/spectre/">results/spectre/&lt;run-id&gt;/</a><span class="desc">- per-run <code>meta.json</code> + <code>tokens.csv</code>; one directory per spectre invocation</span></li>
+        <li><a href="../../scripts/quality_eval.py">spectre/scripts/quality_eval.py</a><span class="desc">- builds the 7 quality figures from <code>results/spectre/*/</code></span></li>
+        <li><a href="../../scripts/benchmark.sh">spectre/scripts/benchmark.sh</a><span class="desc">- sweeps the spectre binary over (seed × n_max); writes <code>results/spectre/&lt;run-id&gt;/</code></span></li>
+        <li><a href="../../scripts/README.md">spectre/scripts/README.md</a><span class="desc">- pipeline overview + model-pair guidance</span></li>
+        <li><a href="../../../llama_cpp_benchmark.sh">llama_cpp_benchmark.sh</a><span class="desc">- llama-server benchmark across all <code>--spec-type</code> values (separate engine; logs in <code>logs/</code>)</span></li>
+        <li><a href="../../../llama_cpp_benchmark_speculative.sh">llama_cpp_benchmark_speculative.sh</a><span class="desc">- llama-server speculative variants of the above</span></li>
       </ul>
 
       <h2 class="section-title">Upstream contributions to <code>llama.cpp</code></h2>
@@ -183,12 +183,12 @@
       <h2 class="section-title">Written material</h2>
       <p class="section-sub">Long-form notes and presentation sources.</p>
       <ul class="code-list">
-        <li><a href="../../../notes.md">notes.md</a><span class="desc">— full thesis notebook</span></li>
-        <li><a href="../quality_eval_slides.md">quality_eval_slides.md</a><span class="desc">— slide outline</span></li>
-        <li><a href="../README.md">presentation/README.md</a><span class="desc">— how to view and regenerate everything on this page</span></li>
-        <li><a href="../mermaid/diagrams.md">mermaid/diagrams.md</a><span class="desc">— raw Mermaid sources (paste into mermaid.live)</span></li>
-        <li><a href="../excalidraw/README.md">excalidraw/README.md</a><span class="desc">— hand-drawn slide workflow + starter scene</span></li>
-        <li><a href="../../../thesis.pdf">thesis.pdf</a><span class="desc">— current LaTeX build</span></li>
+        <li><a href="../../../notes.md">notes.md</a><span class="desc">- full thesis notebook</span></li>
+        <li><a href="../quality_eval_slides.md">quality_eval_slides.md</a><span class="desc">- slide outline</span></li>
+        <li><a href="../README.md">presentation/README.md</a><span class="desc">- how to view and regenerate everything on this page</span></li>
+        <li><a href="../mermaid/diagrams.md">mermaid/diagrams.md</a><span class="desc">- raw Mermaid sources (paste into mermaid.live)</span></li>
+        <li><a href="../excalidraw/README.md">excalidraw/README.md</a><span class="desc">- hand-drawn slide workflow + starter scene</span></li>
+        <li><a href="../../../thesis.pdf">thesis.pdf</a><span class="desc">- current LaTeX build</span></li>
       </ul>
 
     </main>

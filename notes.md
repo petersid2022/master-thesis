@@ -14,7 +14,7 @@
   - [Practical takeaways for picking SD pairs](#practical-takeaways-for-picking-sd-pairs)
 - [Quantization](#quantization)
   - [What it is](#what-it-is)
-  - [Why we do it — memory bandwidth is the bottleneck](#why-we-do-it--memory-bandwidth-is-the-bottleneck)
+  - [Why we do it - memory bandwidth is the bottleneck](#why-we-do-it--memory-bandwidth-is-the-bottleneck)
   - [Does it hurt quality?](#does-it-hurt-quality)
   - [Do other inference engines use it?](#do-other-inference-engines-use-it)
   - [Pareto-frontier tool, not a necessary evil](#pareto-frontier-tool-not-a-necessary-evil)
@@ -121,7 +121,7 @@ These are soft-max probabilities over the vocabulary, the same kind of probabili
 ## Model naming conventions
 
 A reference for reading model filenames in the wild. Filenames like
-`Qwen3-30B-A3B-Instruct-Q4_K_M.gguf` compress 4–5 orthogonal things into one
+`Qwen3-30B-A3B-Instruct-Q4_K_M.gguf` compress 4-5 orthogonal things into one
 string; this section decodes each slot.
 
 ### The five-slot decoder
@@ -143,7 +143,7 @@ fam     v    spec size  tune  quant (i-quant, 2-bit medium)
 
 Nemotron-3-Nano-4B-BF16.gguf
 ↑        ↑ ↑    ↑  ↑
-fam      v size size precision (no quant — full bf16)
+fam      v size size precision (no quant - full bf16)
 ```
 
 `Nano` here is NVIDIA's size-class label (Nano < Mini < Small < Medium < Large)
@@ -161,7 +161,7 @@ rather than a separate slot.
 
 Memory ≈ `params × bytes_per_param`. A 70B model at FP16 is ~140 GB.
 
-**MoE models — the `XB-AYB` form.** `X` is total, `A` is active per token:
+**MoE models - the `XB-AYB` form.** `X` is total, `A` is active per token:
 
 ```
 30B-A3B            = 30 B total parameters, ~3 B active per token
@@ -180,7 +180,7 @@ Why this matters for the thesis:
 - **Speculative-decoding economics change.** The target/draft size ratio that
   gives a good speedup is usually `draft ≈ target / 10..20`. For MoE,
   compare *active* params, not totals. A `30B-A3B` target effectively asks a
-  3B draft to keep up — harder than drafting for a dense 30B model.
+  3B draft to keep up - harder than drafting for a dense 30B model.
 - **Memory pressure is still high.** You need ~30 B worth of VRAM regardless,
   unless you use expert offloading.
 
@@ -198,7 +198,7 @@ Real MoE models you'll encounter:
 
 | Suffix | Meaning |
 |---|---|
-| (none) or `-Base` | Pretrained on text completion only — no instruction following |
+| (none) or `-Base` | Pretrained on text completion only - no instruction following |
 | `-Instruct` | SFT'd on instruction-following pairs |
 | `-Chat` | Same idea, often with multi-turn formatting |
 | `-Coder` | Continued pre-training on code |
@@ -206,7 +206,7 @@ Real MoE models you'll encounter:
 | `-DPO`, `-RLHF`, `-RLAIF` | Indicates the preference-training method used |
 | `-it` | Some labs use `-it` for "instruction-tuned" (Gemma) |
 
-For SD experiments, **the draft and target should share fine-tuning style** —
+For SD experiments, **the draft and target should share fine-tuning style** -
 pair `-Instruct` with `-Instruct`. Mixing base with chat models lowers
 acceptance rates because their distributions on chat-formatted input diverge.
 
@@ -220,7 +220,7 @@ Q8_0 / Q6_K       = 8 or 6 bits per weight
 Q5_K / Q4_K       = 5 or 4 bits
 Q3_K / Q2_K       = 3 or 2 bits
 IQ4_XS / IQ3_M    = importance-matrix quants (i-quants)
-IQ2_XXS / IQ1_S   = ultra-low-bit (1.5–2.5 bits effective)
+IQ2_XXS / IQ1_S   = ultra-low-bit (1.5-2.5 bits effective)
 ```
 
 **Suffix tier.** `_S`, `_M`, `_L` after a K-quant means
@@ -228,7 +228,7 @@ IQ2_XXS / IQ1_S   = ultra-low-bit (1.5–2.5 bits effective)
 
 ```
 Q4_K_S = mostly 4-bit; smallest size, lowest quality
-Q4_K_M = 4-bit with critical layers (attention, output) bumped higher — best-balanced
+Q4_K_M = 4-bit with critical layers (attention, output) bumped higher - best-balanced
 Q4_K_L = even more critical layers kept higher
 ```
 
@@ -254,14 +254,14 @@ Q8_0                      = 8-bit, used as the high-fidelity reference; "essenti
 ```
 
 `Q8_0` deserves a callout: it's effectively a lossless 50% size reduction from
-FP16. **Almost always the right choice for a draft model** — fast, tiny, and the
+FP16. **Almost always the right choice for a draft model** - fast, tiny, and the
 draft's slight quality loss doesn't matter because the target verifies everything.
 
 ### Other ecosystems
 
 | Format | Where |
 |---|---|
-| `GPTQ` | HuggingFace, AutoGPTQ, ExLlama — GPU-focused 4-bit |
+| `GPTQ` | HuggingFace, AutoGPTQ, ExLlama - GPU-focused 4-bit |
 | `AWQ` | activation-aware quantization, GPU |
 | `EXL2` | ExLlamaV2; per-layer mixed bit-width |
 | `MLX` | Apple Silicon |
@@ -285,8 +285,8 @@ Three things determine speculative-decoding efficiency:
 1. **Same family + same fine-tune.** Vocabulary and distribution must match;
    the spectre binary checks vocab equivalence at startup.
 2. **Active-param ratio.** Aim for `draft active ≈ target active ÷ 8..20`.
-   - For dense `26B`: draft 1.5B–3B.
-   - For MoE `30B-A3B`: ideal draft is 0.2B–0.4B (rarely available) — which is
+   - For dense `26B`: draft 1.5B-3B.
+   - For MoE `30B-A3B`: ideal draft is 0.2B-0.4B (rarely available) - which is
      why **SD on MoE is harder, not easier**.
 3. **Quant pair.** Target `Q5_K_M` or higher (don't waste verification budget
    on a noisy target); draft `Q4_K_M` or `Q8_0`.
@@ -311,7 +311,7 @@ Quantization and Speculative Decoding both attack the same bottleneck (memory ba
 
 Models are trained in `float32` (32 bits = 4 bytes per weight) or, more often
 today, `bfloat16` (16 bits = 2 bytes). Quantization converts those weights
-into a lower-bit representation — typically 8, 4, or even 2 bits — at the cost
+into a lower-bit representation - typically 8, 4, or even 2 bits - at the cost
 of some precision loss.
 
 The simplest scheme (uniform integer quantization):
@@ -325,7 +325,7 @@ restored  weight   ≈ quantized / (127 / W_max)          (back to float, lossy)
 You store the `int8` value and the scaling factor `W_max/127`. At inference
 time, you decode back to float on the fly to do the matrix multiply.
 
-Real quantization is much fancier than this — modern formats (`Q4_K_M`,
+Real quantization is much fancier than this - modern formats (`Q4_K_M`,
 `IQ3_M`, etc.) use:
 
 - **Block-wise scaling**: each group of ~32 weights gets its own scale, so a
@@ -337,7 +337,7 @@ Real quantization is much fancier than this — modern formats (`Q4_K_M`,
 
 But the core idea is unchanged: trade precision for storage.
 
-### Why we do it — memory bandwidth is the bottleneck
+### Why we do it - memory bandwidth is the bottleneck
 
 The widely-quoted reason is "models don't fit in VRAM." That's true but it's
 the symptom, not the cause. The real reason is more important:
@@ -367,7 +367,7 @@ Now apply quantization to the same 7 B model:
 | Q8_0 | 1.0 | 3.5 ms | ~286 |
 | Q4_K_M | 0.55 | 1.9 ms | ~526 |
 
-You don't speed up the math — the GPU still computes in higher precision
+You don't speed up the math - the GPU still computes in higher precision
 internally after dequantizing. You speed up the **memory transfer**, and since
 memory is the bottleneck, you get a near-linear speedup. Q4_K_M is ~3.7× faster
 than F16 simply because each weight is 3.7× smaller.
@@ -384,10 +384,10 @@ held-out corpus. Rough empirical curve (varies by model; the shape is universal)
 | Q8_0 | ~0.0 % PPL Δ | 50 % |
 | Q6_K | ~0.1 % | 38 % |
 | Q5_K_M | ~0.5 % | 33 % |
-| Q4_K_M | ~1–2 % | 28 %  ← practical sweet spot |
-| Q3_K_M | ~3–6 % | 23 % |
-| Q2_K | ~10–20 % | 19 %  ← starts to matter |
-| IQ1_S | 30–50 %+ | 14 %  ← only useful in extremis |
+| Q4_K_M | ~1-2 % | 28 %  ← practical sweet spot |
+| Q3_K_M | ~3-6 % | 23 % |
+| Q2_K | ~10-20 % | 19 %  ← starts to matter |
+| IQ1_S | 30-50 %+ | 14 %  ← only useful in extremis |
 
 Above ~4 bits the quality loss is **smaller than what a different random seed
 gives you** on most benchmarks. Below ~3 bits, the loss becomes user-visible
@@ -408,7 +408,7 @@ Universally. It's table stakes:
 | **vLLM** (Berkeley/UC, dominant server) | AWQ, GPTQ, FP8, INT8 KV cache, FP8 KV cache |
 | **TGI** (HuggingFace) | bitsandbytes (8/4-bit), GPTQ, AWQ, EETQ |
 | **TensorRT-LLM** (NVIDIA, production) | FP8 (heavily), INT8, INT4 weight-only |
-| **ExLlamaV2** | EXL2 — bespoke per-layer mixed bit-width |
+| **ExLlamaV2** | EXL2 - bespoke per-layer mixed bit-width |
 | **MLX** (Apple) | INT4, INT8 quantization for Apple Silicon |
 | **MLC-LLM** (mobile) | INT3, INT4 |
 | **Ollama, LM Studio, Jan** | all wrap llama.cpp |
@@ -418,20 +418,20 @@ Fireworks…) also quantize internally; "latency-vs-cost tiers" almost certainly
 correspond to different quantization levels of the same backbone.
 
 The only place you *don't* see quantization is research training (you train at
-BF16/FP16 because gradient noise blows up at lower precision — though FP8
+BF16/FP16 because gradient noise blows up at lower precision - though FP8
 training is now production-grade at large scale).
 
 ### Pareto-frontier tool, not a necessary evil
 
-The honest framing: it's not "good" or "evil" — it's a Pareto-frontier knob.
+The honest framing: it's not "good" or "evil" - it's a Pareto-frontier knob.
 
 - **At the right operating points it's free.** `Q8_0` is a 50 % memory and
   bandwidth saving for ~0 % quality loss. There is no good reason *not* to use
   it. `Q6_K` and `Q5_K_M` are nearly the same story.
-- **At aggressive operating points it's a trade.** `Q4_K_M` costs ~1–2 % on
-  standard benchmarks but cuts inference time ~3–4×. For an interactive
+- **At aggressive operating points it's a trade.** `Q4_K_M` costs ~1-2 % on
+  standard benchmarks but cuts inference time ~3-4×. For an interactive
   chatbot wildly worth it; for a medical diagnostic system maybe not.
-- **At extreme operating points it's a necessary evil.** `IQ2`, `IQ1` — you
+- **At extreme operating points it's a necessary evil.** `IQ2`, `IQ1` - you
   accept measurable quality loss because the alternative is "the model doesn't
   load." This is what makes a 70 B model run on a 16 GB consumer GPU at all.
 
@@ -444,21 +444,21 @@ Three threads worth pulling on, all relevant to the thesis:
 
 1. **Quantization and SD attack the same bottleneck from different angles.**
    Quant reduces *bytes per weight*. SD reduces *token-equivalent weight-reads
-   per output token* — by verifying N drafted tokens in parallel against the
+   per output token* - by verifying N drafted tokens in parallel against the
    target, the target reads its weights once and outputs ≤ N tokens. The two
    multiply: a 4× speedup from Q4 × a 2× speedup from SD ≈ 8× faster than an
    F16 AR baseline. `quality-speed-vs-accept.png` measures the SD half; the
    quant choice sets the baseline against which everything is plotted.
 
 2. **Self-speculative decoding (the Nemotron BF16 + Q8 setup) is essentially
-   quant-as-draft.** The Q8 draft is a "noisy approximation of the target" —
+   quant-as-draft.** The Q8 draft is a "noisy approximation of the target" -
    exactly the regime where SD shines, because the noise is small enough that
    acceptance stays high. There's a cluster of recent papers (LayerSkip,
    SpecDec via Self-Distillation) formalising this as its own SD family.
 
 3. **Quant choice affects acceptance rate even within the same model family.**
    If target and draft are *both* `Q4_K_M`, the draft is closer to the target
-   than if the target were FP16 — both made the same quantization "errors", so
+   than if the target were FP16 - both made the same quantization "errors", so
    their distributions are more correlated. This is a deliberately exploitable
    design choice, not a bug.
 
@@ -800,7 +800,7 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
 The first instinct is: "run target alone, run SD, compute perplexity of each output, compare." This is wrong for two reasons:
 
 1. **They sample different sequences.** Perplexity of a *generated* sequence under the model that generated it is a self-evaluation, not a comparison. Two different valid completions of the same prompt can have very different per-token perplexities and both be high-quality.
-2. **For vanilla SD the comparison is theoretically vacuous.** The output of correct SD is a *sample* from the target — exactly. So `PPL(SD output | target)` and `PPL(target output | target)` have the same distribution. Reporting "they match" doesn't prove much; reporting "they differ" proves your SD implementation is buggy.
+2. **For vanilla SD the comparison is theoretically vacuous.** The output of correct SD is a *sample* from the target - exactly. So `PPL(SD output | target)` and `PPL(target output | target)` have the same distribution. Reporting "they match" doesn't prove much; reporting "they differ" proves your SD implementation is buggy.
 
 So perplexity is useful here as a **sanity check** (the implementation is correct) and as a **drift metric** (for lossy variants), not as a quality comparison between losslessly-equivalent algorithms.
 
@@ -887,7 +887,7 @@ Scripts (see `spectre/scripts/README.md` for the full reference):
 - `spectre/scripts/benchmark.sh` sweeps the spectre binary across `(seed × n_max)`
   configs and writes one `results/spectre/<run-id>/` directory per run.
   Default pair is Qwen2.5-1.5B drafting for Qwen2.5-3B (fast smoke). Override with
-  `TGT_MODEL=...gemma-4-26B-A4B... DFT_MODEL=...gemma-4-E2B... bash spectre/scripts/benchmark.sh`
+  `TGT_MODEL=...gemma-4-26B-A4B... DFT_MODEL=...gemma-4-E2B... ./spectre/scripts/benchmark.sh`
   for the realistic Gemma showcase.
 - `spectre/scripts/quality_eval.py` reads every `results/spectre/<run-id>/` directory
   and produces 7 PNGs into `spectre/presentation/png/quality-*.png`.
@@ -896,7 +896,7 @@ Scripts (see `spectre/scripts/README.md` for the full reference):
 
 Reproduce end-to-end:
 ```bash
-bash spectre/scripts/benchmark.sh            # ~30-90s on a small GPU
+./spectre/scripts/benchmark.sh               # ~30-90s on a small GPU
 python3 spectre/scripts/quality_eval.py      # regenerate figures
 ```
 
@@ -911,7 +911,7 @@ results/spectre/<run-id>/
 ```
 
 A run-id is auto-generated as `YYYYMMDD-HHMMSS_<mode>_seed<N>` or set explicitly via
-`--run-id`. The run directory is written incrementally — `meta.json` is created at
+`--run-id`. The run directory is written incrementally - `meta.json` is created at
 startup with `"complete": false` and overwritten at the end with `"complete": true`
 plus totals. `tokens.csv` is flushed per row. Both files survive `SIGTERM` / `SIGINT`.
 
@@ -983,7 +983,7 @@ will overwrite the directory deterministically.
 | Self-speculation / n-gram | llama.cpp ngram_*, our PR #22055 | None required (still uses standard rejection rule) |
 | Tree drafting (lossless) | SpecInfer, EAGLE, TALON | None required; ablations on tree topology |
 | **Soft / lossy acceptance** | Medusa, Lookahead | HumanEval pass@1, MT-Bench, GSM8K, MMLU |
-| **Reward-guided** | RSD (Liao 2025) | MATH, GSM8K, AIME — task-specific |
+| **Reward-guided** | RSD (Liao 2025) | MATH, GSM8K, AIME - task-specific |
 | **Quantized draft** | various | Corpus PPL on WikiText-103 / C4 + downstream |
 | **Biased acceptance** (`τ < 1`) | various ablations | KL drift + downstream evals |
 
@@ -994,8 +994,8 @@ Standard datasets when downstream evaluation is required:
 - **PPL:** WikiText-103, C4 validation, The Pile validation slice
 
 What papers **don't** typically use for SD evaluation:
-- BLEU / ROUGE / chrF — penalize valid alternative completions; bad fit for sampling.
-- Single-prompt qualitative comparison — anecdotal, not reproducible.
+- BLEU / ROUGE / chrF - penalize valid alternative completions; bad fit for sampling.
+- Single-prompt qualitative comparison - anecdotal, not reproducible.
 
 ### When perplexity becomes a real lever (lossy variants)
 
@@ -1004,7 +1004,7 @@ Lossless SD is the boring case (PPL preserved by construction). The interesting 
 1. **Biased acceptance.** Replace `α(x) = min(1, p(x)/q(x))` with `α'(x) = min(1, τ · p(x)/q(x))` for `τ > 1`. Accepts more tokens, drifts away from `p`. The Pareto frontier `speedup × KL(p ‖ p')` is the right thing to plot.
 2. **Medusa-style soft acceptance.** Multiple heads vote; the rejection rule is relaxed. PPL drift vs. speedup is reported in the Medusa paper.
 3. **Reward-guided (RSD).** Replace acceptance criterion with a reward threshold. Can actually *improve* over target on reasoning tasks at the cost of theoretical unbiasedness.
-4. **Aggressive draft quantization** (Q2/Q3 draft of a Q8 target). Increases `TV(p, q)` — quality drift if you keep the acceptance rule strict, or speed gain if you relax it.
+4. **Aggressive draft quantization** (Q2/Q3 draft of a Q8 target). Increases `TV(p, q)` - quality drift if you keep the acceptance rule strict, or speed gain if you relax it.
 
 Plausible thesis follow-up: with `p_target` and `p_draft` now in `tokens.csv` per
 accepted token, sweep a bias parameter `τ ∈ [1.0, 2.5]` in the acceptance rule

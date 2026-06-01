@@ -30,19 +30,19 @@ comment in the script for the full list).
 
 ```bash
 # default (Qwen pair, 1 seed, 2 spec configs):
-bash spectre/scripts/benchmark.sh
+./spectre/scripts/benchmark.sh
 
 # realistic Gemma 4 pair (MoE target):
 TGT_MODEL=~/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
 DFT_MODEL=~/models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
 SEEDS="42 43" N_MAX_VALUES="4 8 16" \
-bash spectre/scripts/benchmark.sh
+./spectre/scripts/benchmark.sh
 
 # error bars across seeds:
-SEEDS="42 43 44 45" bash spectre/scripts/benchmark.sh
+SEEDS="42 43 44 45" ./spectre/scripts/benchmark.sh
 
 # AR baseline only (no draft model):
-N_MAX_VALUES="" bash spectre/scripts/benchmark.sh
+N_MAX_VALUES="" ./spectre/scripts/benchmark.sh
 ```
 
 The script resolves paths against the repo root, so it doesn't matter where you
@@ -73,7 +73,4 @@ Target and draft **must share a tokenizer**. Pair within a family + version:
 |---|---|---|
 | Qwen 2.5 | `Qwen2.5-1.5B.Q5_0.gguf` | `Qwen2.5-3B.Q5_0.gguf` |
 | Gemma 4 | `gemma-4-E2B-it-UD-Q4_K_XL.gguf` | `gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf` (MoE) |
-| Gemma 4 | `gemma-4-E2B-it-UD-Q4_K_XL.gguf` | `gemma-4-31B-it-Q4_K_M.gguf` *(needs ≥Q4; Q3 produces broken text)* |
-
-Cross-family pairs (e.g. Qwen2 + Qwen3, or Qwen + Gemma) usually have different
-vocabs and will either crash spectre or produce gibberish.
+| Gemma 4 | `gemma-4-E2B-it-UD-Q4_K_XL.gguf` | `gemma-4-31B-it-Q4_K_M.gguf` (Q4 or higher) |

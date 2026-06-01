@@ -31,7 +31,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  P["prompt_tgt — full tokenized prompt, N tokens"] --> B["llama_batch_get_one(prompt_tgt, N minus 1)"]
+  P["prompt_tgt - full tokenized prompt, N tokens"] --> B["llama_batch_get_one(prompt_tgt, N minus 1)"]
   B --> D["llama_decode(ctx_tgt, batch)"]
   D --> KV["KV cache: positions 0 … N−2"]
   P --> L["last_token = prompt_tgt.back()"]

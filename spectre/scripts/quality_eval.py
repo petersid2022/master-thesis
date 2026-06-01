@@ -238,7 +238,7 @@ def fig_ppl_trace(ref: Run, baseline: Optional[Run], out: Path) -> None:
 
     ax1.set_ylabel("log p_target(accepted)")
     ax1.set_title(
-        "Losslessness sanity check — per-token target probability of accepted tokens",
+        "Losslessness sanity check - per-token target probability of accepted tokens",
         fontsize=11, color=PALETTE["ink"],
     )
     ax1.legend(loc="lower right", frameon=False, fontsize=9)
@@ -274,7 +274,7 @@ def fig_prob_hist(ref: Run, out: Path) -> None:
     if len(finite) > 0:
         ax.axvline(finite.mean(), color=PALETTE["bad"], lw=1.4, ls="--",
                    label=f"mean p_target = {finite.mean():.3f}")
-    ax.set_xlabel("p_target(x)  — target's probability mass on the accepted token")
+    ax.set_xlabel("p_target(x)  - target's probability mass on the accepted token")
     ax.set_ylabel("number of tokens")
     ax.set_title(
         f"Distribution of target confidence on accepted tokens  ({ref.short_label})",
@@ -334,7 +334,7 @@ def fig_speed_vs_accept(runs: list[Run], baseline: Optional[Run], out: Path) -> 
 
     ax.set_xlabel("acceptance rate")
     ax.set_ylabel("decode throughput  (tokens / second)")
-    ax.set_title("Efficiency frontier — throughput vs. acceptance per run",
+    ax.set_title("Efficiency frontier - throughput vs. acceptance per run",
                  fontsize=11)
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -349,7 +349,7 @@ def fig_per_position_empirical(runs: list[Run], out: Path) -> None:
       - positions [r+1, k)          were NOT reached (we stopped after first rejection)
 
     Per-position acceptance probability P(pos accepted) = reached AND accepted / total rounds.
-    This is the unconditional curve — directly comparable to the geometric p^i model.
+    This is the unconditional curve - directly comparable to the geometric p^i model.
     """
     spec_runs = [r for r in runs if r.is_speculative and r.rounds]
     if not spec_runs:
@@ -393,7 +393,7 @@ def fig_per_position_empirical(runs: list[Run], out: Path) -> None:
             ax2.scatter([max_k], [mean_accepted], color=c, marker="x", s=80, zorder=4)
 
     ax1.set_xlabel("position within draft  (i)")
-    ax1.set_ylabel("P(i-th draft token accepted)  — empirical")
+    ax1.set_ylabel("P(i-th draft token accepted)  - empirical")
     ax1.set_ylim(0, 1)
     ax1.set_title("Per-position acceptance from per-round summaries", fontsize=10.5)
     ax1.legend(frameon=False, fontsize=8, loc="upper right")
@@ -430,7 +430,7 @@ def fig_draft_vs_target_prob(ref: Run, out: Path) -> None:
     ax.set_ylabel("p_target(x)")
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.set_title(
-        "Draft vs. target probability — accepted-from-draft tokens\n"
+        "Draft vs. target probability - accepted-from-draft tokens\n"
         f"({ref.short_label}; mean |p_t − p_d| = {abs_diff.mean():.3f})",
         fontsize=10.5,
     )

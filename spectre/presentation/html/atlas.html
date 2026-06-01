@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Spectre — figure atlas (Mermaid)</title>
+    <title>Spectre - figure atlas (Mermaid)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -53,7 +53,7 @@ flowchart TB
   classDef tgt fill:#e8f4fc,stroke:#2b6cb0,stroke-width:2px,color:#0f172a
   classDef dft fill:#e6faf0,stroke:#276749,stroke-width:2px,color:#0f172a
 
-  subgraph AR["`Autoregressive run() — no draft path`"]
+  subgraph AR["`Autoregressive run() - no draft path`"]
     direction TB
     a0["`batch = full prompt from decode() (one slot per token)`"]
     a1["`forward(target_model, batch)`"]
@@ -63,7 +63,7 @@ flowchart TB
     a0 --> a1 --> a2 --> a3 --> a4 --> a1
   end
 
-  subgraph SP["`Speculative run() — draft + batched verify on target`"]
+  subgraph SP["`Speculative run() - draft + batched verify on target`"]
     direction TB
     p0["`Warm-up: batch = prompt except last · forward · last_token = pop_back`"]
     p1["`Each round: n_past = last committed position + 1`"]
@@ -212,14 +212,14 @@ flowchart TB
     direction TB
     f1["`For i = i_start … prompt_tgt.size()−1`"]
     f2["`enqueue token[i] @ local pos, no logits (replay)`"]
-    f3["`forward(draft_model) — fills KV for replayed tail`"]
+    f3["`forward(draft_model) - fills KV for replayed tail`"]
     f1 --> f2 --> f3
   end
 
   subgraph SEED["`Align with target`"]
     direction TB
     s1["`enqueue last_token @ next pos, request logits`"]
-    s2["`decode — draft logits for same symbol target will verify`"]
+    s2["`decode - draft logits for same symbol target will verify`"]
     s1 --> s2
   end
 
@@ -259,7 +259,7 @@ flowchart LR
     d0 --> d1 --> dk --> dm
   end
 
-  subgraph TGT["`target verify batch — one batched forward`"]
+  subgraph TGT["`target verify batch - one batched forward`"]
     direction TB
     r0["`row 0: token last_token · pos n_past · logits true`"]
     r1["`row 1: token draft[0] · pos n_past+1`"]
@@ -395,7 +395,7 @@ flowchart TD
           <figure class="diagram">
             <pre class="mermaid">
 flowchart TB
-  subgraph VB["`target verify batch — one batched forward`"]
+  subgraph VB["`target verify batch - one batched forward`"]
     direction TB
     R0["`row 0 · pos n0 · token last_token · logits true → sample row 0 vs draft[0]`"]
     R1["`row 1 · pos n0+1 · token draft[0]`"]
@@ -446,7 +446,7 @@ flowchart TB
   B["`n_past += accepted.size() − 1 (before state loop)`"]
   C["`Loop: append prior last_token to prefix · last_token ← each accepted id`"]
   D["`trim target KV from n_past onward`"]
-  E["`Tail removed — KV matches committed sequence`"]
+  E["`Tail removed - KV matches committed sequence`"]
   A --> B --> C --> D --> E
             </pre>
             <figcaption>
@@ -466,7 +466,7 @@ flowchart TB
   classDef tgt fill:#e8f4fc,stroke:#2b6cb0,stroke-width:2px,color:#0f172a
 
   subgraph SH["`Shared setup (decode)`"]
-    P["`top_k, top_p, temp — paired samplers (target + draft)`"]
+    P["`top_k, top_p, temp - paired samplers (target + draft)`"]
   end
 
   subgraph DF["`Draft model`"]
@@ -502,7 +502,7 @@ flowchart TB
             <pre class="mermaid">
 flowchart LR
   V1["`BOS / EOS special tokens align`"] --> V2["`vocab size delta ≤ 128`"]
-  V2 --> OK["`tokenize() passes — macro bound`"]
+  V2 --> OK["`tokenize() passes - macro bound`"]
             </pre>
             <figcaption><strong>Figure.</strong> Avoids incompatible token ids between draft and target.</figcaption>
           </figure>
@@ -557,7 +557,7 @@ flowchart TB
           padding: 14,
           nodeSpacing: 50,
           rankSpacing: 55,
-          /* Markdown labels (`["`…`"]`) wrap at this width — wider reduces mid-word breaks */
+          /* Markdown labels (`["`…`"]`) wrap at this width - wider reduces mid-word breaks */
           wrappingWidth: 300,
         },
         sequence: {

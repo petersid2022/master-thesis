@@ -19,32 +19,30 @@
 # Examples
 # --------
 #   # default: Qwen2.5 1.5B/3B pair, one seed, two draft lengths. ~30-90s on GPU.
-#   bash spectre/scripts/benchmark.sh
+#   ./spectre/scripts/benchmark.sh
 #
 #   # quick smoke (1 seed, 1 spec config, 32 tokens each):
-#   N_PREDICT=32 N_MAX_VALUES=4 bash spectre/scripts/benchmark.sh
+#   N_PREDICT=32 N_MAX_VALUES=4 ./spectre/scripts/benchmark.sh
 #
 #   # bigger sweep, more seeds for error bars:
-#   SEEDS="42 43 44" N_MAX_VALUES="2 4 8 16" N_PREDICT=256 bash spectre/scripts/benchmark.sh
+#   SEEDS="42 43 44" N_MAX_VALUES="2 4 8 16" N_PREDICT=256 ./spectre/scripts/benchmark.sh
 #
 #   # realistic showcase pair (Gemma 4 E2B drafting for Gemma 4 26B-A4B MoE):
 #   TGT_MODEL=~/models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
 #   DFT_MODEL=~/models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
 #     SEEDS="42 43" N_MAX_VALUES="4 8 16" \
-#     bash spectre/scripts/benchmark.sh
+#     ./spectre/scripts/benchmark.sh
 #
 #   # AR baseline only on a standalone model:
 #   TGT_MODEL=~/models/Qwen3.5-9B-Q8_0.gguf N_MAX_VALUES="" \
-#     bash spectre/scripts/benchmark.sh
+#     ./spectre/scripts/benchmark.sh
 #
 # Notes on picking a pair
 # -----------------------
 # Speculative decoding requires the target and draft to share the same
-# tokenizer/vocab. Always pair within a model family + version:
+# tokenizer/vocab. Pair within a model family + version:
 #   * Qwen2.5 1.5B  draft   <-- target  Qwen2.5 3B
 #   * Gemma 4 E2B   draft   <-- target  Gemma 4 26B-A4B (MoE)  or  Gemma 4 31B
-# Cross-family pairs (e.g. Qwen2 + Qwen3) usually have different vocabs and
-# will either crash spectre or produce gibberish.
 
 set -euo pipefail
 
@@ -86,11 +84,11 @@ bold()  { printf '\033[1m%s\033[0m' "$*"; }
 
 die() { echo "$(red ERROR): $*" >&2; exit 1; }
 
-[[ -x "$SPECTRE"   ]] || die "missing binary: $SPECTRE — build with: (cd spectre && cmake -B build && cmake --build build)"
-[[ -f "$TGT_MODEL" ]] || die "missing target model: $TGT_MODEL — set TGT_MODEL=<path>"
+[[ -x "$SPECTRE"   ]] || die "missing binary: $SPECTRE - build with: (cd spectre && cmake -B build && cmake --build build)"
+[[ -f "$TGT_MODEL" ]] || die "missing target model: $TGT_MODEL - set TGT_MODEL=<path>"
 
 if [[ -n "$N_MAX_VALUES" ]]; then
-  [[ -f "$DFT_MODEL" ]] || die "missing draft model: $DFT_MODEL — set DFT_MODEL=<path> or N_MAX_VALUES=\"\" for AR only"
+  [[ -f "$DFT_MODEL" ]] || die "missing draft model: $DFT_MODEL - set DFT_MODEL=<path> or N_MAX_VALUES=\"\" for AR only"
 fi
 
 if [[ -n "$PROMPT_FILE" ]]; then
@@ -123,7 +121,7 @@ echo "  target model:  $TGT_MODEL"
 if [[ -n "$N_MAX_VALUES" ]]; then
   echo "  draft model:   $DFT_MODEL"
 else
-  echo "  draft model:   (none — AR baseline only)"
+  echo "  draft model:   (none - AR baseline only)"
 fi
 echo "  prompt:        ${PROMPT:0:80}$([[ ${#PROMPT} -gt 80 ]] && echo '...')"
 echo "  n_predict:     $N_PREDICT     ctx: $CTX     ngl: $NGL"
@@ -225,6 +223,5 @@ echo
 echo "$(bold done)  ${elapsed}s wall.  $(green ok=$n_done) $(green skip=$n_skip) $(red fail=$n_fail)"
 echo
 echo "next steps:"
-echo "  $(bold 'inspect a run:')   python3 -c \"import json; print(json.dumps(json.load(open('$RESULTS_DIR/${runs[0]%%|*}/meta.json')), indent=2))\""
-echo "  $(bold 'regenerate plots:') python3 spectre/scripts/quality_eval.py"
-echo "  $(bold 'view dashboard:')   cd spectre/presentation/html && python3 -m http.server 8765"
+echo "  $(bold 'regenerate figures:') python3 spectre/scripts/quality_eval.py"
+echo "  $(bold 'view results:')       see spectre/presentation/README.md"

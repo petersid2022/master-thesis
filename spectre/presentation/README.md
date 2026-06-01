@@ -19,7 +19,7 @@ speculative sampling". Built around `spectre/src/main.cpp` and three upstream
 
 ## View locally
 
-From the **repository root** (not from `html/`):
+From the repository root:
 
 ```bash
 python3 -m http.server 8765
@@ -27,10 +27,9 @@ python3 -m http.server 8765
 ```
 
 The HTML files use relative paths like `../quality_eval_slides.md` and
-`../../../results/spectre/` that resolve only when the server's document root is
-the repo root. Running the server from inside `html/` will 404 those links.
+`../../../results/spectre/` that resolve against the repo root.
 
-Mermaid diagrams render client-side from a CDN — **Print → Save as PDF** from the
+Mermaid diagrams render client-side from a CDN - **Print → Save as PDF** from the
 atlas page for a static export.
 
 ## Regenerate the figures
@@ -55,5 +54,5 @@ For sweep options, model-pair guidance, and the env-var reference, see
 [`spectre/scripts/README.md`](../scripts/README.md).
 
 Figures that haven't been generated yet are hidden automatically in `index.html`
-and `quality.html` — there is no broken-image state. As soon as the PNGs appear
+and `quality.html` - there is no broken-image state. As soon as the PNGs appear
 under `png/`, a refresh reveals them.
