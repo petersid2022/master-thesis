@@ -1286,21 +1286,21 @@ private:
   std::vector<llama_token> draft_ngram() {
     const auto &tokens = this->prompt_target;
     const llama_token sampled = this->last_token;
-    const size_t N = (size_t)this->params.n_gram_size;
-    const size_t M = (size_t)this->params.m_gram_size;
-    const size_t cur_len = tokens.size();
+    const std::size_t N = (std::size_t)this->params.n_gram_size;
+    const std::size_t M = (std::size_t)this->params.m_gram_size;
+    const std::size_t cur_len = tokens.size();
     std::vector<llama_token> result;
     if (cur_len <= N + M + 1) return result;
     std::vector<llama_token> pattern;
     pattern.reserve(N);
-    for (size_t j = cur_len - N + 1; j < cur_len; ++j) {
+    for (std::size_t j = cur_len - N + 1; j < cur_len; ++j) {
       pattern.push_back(tokens[j]);
     }
     pattern.push_back(sampled);
-    size_t match_pos = 0;
-    for (size_t j = cur_len - N - 1; j > 0; --j) {
+    std::size_t match_pos = 0;
+    for (std::size_t j = cur_len - N - 1; j > 0; --j) {
       bool match = true;
-      for (size_t k = 0; k < pattern.size(); ++k) {
+      for (std::size_t k = 0; k < pattern.size(); ++k) {
         if (tokens[j + k] != pattern[k]) {
           match = false;
           break;
@@ -1312,10 +1312,10 @@ private:
       }
     }
     if (match_pos == 0) return result;
-    const size_t copy_max = std::min(M, cur_len - (match_pos + N));
+    const std::size_t copy_max = std::min(M, cur_len - (match_pos + N));
     if (copy_max < N) return result;
     result.reserve(copy_max);
-    for (size_t j = 0; j < copy_max; ++j) {
+    for (std::size_t j = 0; j < copy_max; ++j) {
       result.push_back(tokens[match_pos + N + j]);
     }
     this->last_draft_probs.assign(result.size(), std::numeric_limits<double>::quiet_NaN());
