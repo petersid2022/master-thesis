@@ -1306,12 +1306,8 @@ private:
   std::vector<llama_token> draft(void) {
     llama_memory_t mem_draft = llama_get_memory(this->ctx_draft);
 
-    // TODO implement reuse context window mechanism
-    // int reuse_i = 0; // the index of the first token to be reused
-    // int reuse_n = 0; // how much tokens can we reuse
-
-    llama_memory_clear(mem_draft, false);
-    this->prompt_draft.clear();
+    int reuse_i = 0; // the index of the first token to be reused
+    int reuse_n = 0; // how much tokens can we reuse
 
     const std::vector<llama_token> &current_prompt = this->prompt_target;
 
@@ -1335,59 +1331,57 @@ private:
     // reuse as much as possible from the old draft context
     // ideally, the draft context should be as big as the target context
     // and we will always reuse the entire prompt
-    // for (int i = 0; i < (int)this->prompt_draft.size(); ++i) {
-    //   int cur = 0;
-    //   while (i_start + cur < (int)current_prompt.size() && i + cur < (int)this->prompt_draft.size() &&
-    //          current_prompt[(std::size_t)(i_start + cur)] == this->prompt_draft[(std::size_t)(i + cur)]) {
-    //     cur++;
-    //   }
-    //   if ((cur >= 256 || n_ctx >= (int)current_prompt.size()) && cur > reuse_n) {
-    //     reuse_i = i;
-    //     reuse_n = cur;
-    //   }
-    // }
+    for (int i = 0; i < (int)this->prompt_draft.size(); ++i) {
+      int cur = 0;
+      while (i_start + cur < (int)current_prompt.size() && i + cur < (int)this->prompt_draft.size() &&
+             current_prompt[(std::size_t)(i_start + cur)] == this->prompt_draft[(std::size_t)(i + cur)]) {
+        cur++;
+      }
+      if ((cur >= 256 || n_ctx >= (int)current_prompt.size()) && cur > reuse_n) {
+        reuse_i = i;
+        reuse_n = cur;
+      }
+    }
 
     std::vector<llama_token> result;
     result.reserve((std::size_t)this->params.n_max); // n_max tokens to be drafted at a time
 
-    // TODO implement reuse context window mechanism
-    // if (reuse_n == 0) {
-    //   // nothing to be reused
-    //   llama_memory_clear(mem_draft, false);
-    //   this->prompt_draft.clear();
-    // } else {
-    //   // this happens when a previous draft has been discarded (for example, due to being too small),
-    //   // but the target model agreed with it. in this case, we simply pass back the previous results
-    //   // to save compute
-    //   if (reuse_i + reuse_n < (int)this->prompt_draft.size() &&
-    //       this->prompt_draft[(std::size_t)(reuse_i + reuse_n)] == this->last_token) {
-    //     for (int i = reuse_i + reuse_n + 1; i < (int)this->prompt_draft.size(); ++i) {
-    //       result.push_back(this->prompt_draft[(std::size_t)i]);
-    //       if (this->params.n_max <= (int)result.size()) {
-    //         break;
-    //       }
-    //     }
-    //     return result;
-    //   }
-    //
-    //   if (reuse_i > 0) {
-    //     llama_memory_seq_rm(mem_draft, 0, 0, reuse_i);
-    //     llama_memory_seq_add(mem_draft, 0, reuse_i, -1, -reuse_i);
-    //     this->prompt_draft.erase(this->prompt_draft.begin(), this->prompt_draft.begin() + reuse_i);
-    //   }
-    //
-    //   if (reuse_n < (int)this->prompt_draft.size()) {
-    //     llama_memory_seq_rm(mem_draft, 0, reuse_n, -1);
-    //     this->prompt_draft.erase(this->prompt_draft.begin() + reuse_n, this->prompt_draft.end());
-    //   }
-    // }
+    if (reuse_n == 0) {
+      // nothing to be reused
+      llama_memory_clear(mem_draft, false);
+      this->prompt_draft.clear();
+    } else {
+      // this happens when a previous draft has been discarded (for example, due to being too small),
+      // but the target model agreed with it. in this case, we simply pass back the previous results
+      // to save compute
+      if (reuse_i + reuse_n < (int)this->prompt_draft.size() &&
+          this->prompt_draft[(std::size_t)(reuse_i + reuse_n)] == this->last_token) {
+        for (int i = reuse_i + reuse_n + 1; i < (int)this->prompt_draft.size(); ++i) {
+          result.push_back(this->prompt_draft[(std::size_t)i]);
+          if (this->params.n_max <= (int)result.size()) {
+            break;
+          }
+        }
+        return result;
+      }
+
+      if (reuse_i > 0) {
+        llama_memory_seq_rm(mem_draft, 0, 0, reuse_i);
+        llama_memory_seq_add(mem_draft, 0, reuse_i, -1, -reuse_i);
+        this->prompt_draft.erase(this->prompt_draft.begin(), this->prompt_draft.begin() + reuse_i);
+      }
+
+      if (reuse_n < (int)this->prompt_draft.size()) {
+        llama_memory_seq_rm(mem_draft, 0, reuse_n, -1);
+        this->prompt_draft.erase(this->prompt_draft.begin() + reuse_n, this->prompt_draft.end());
+      }
+    }
 
     // clean slate
     this->reset_batch(this->speculation_batch_draft);
 
-    // for (std::size_t i = (std::size_t)i_start + (std::size_t)reuse_n; i < current_prompt.size(); ++i) {
     const int32_t draft_batch_cap = (int32_t)llama_n_batch(this->ctx_draft);
-    for (std::size_t i = i_start; i < current_prompt.size(); ++i) {
+    for (std::size_t i = (std::size_t)i_start + (std::size_t)reuse_n; i < current_prompt.size(); ++i) {
       this->create_new_batch(
           this->speculation_batch_draft, draft_batch_cap,
           current_prompt[i],
