@@ -36,8 +36,14 @@ static inline const char *log_level_to_string(enum ggml_log_level level) {
 
 template <typename... Args>
 static inline void print(enum ggml_log_level level, std::string_view fmt, Args &&...args) {
-  auto message = std::vformat(fmt, std::make_format_args(args...));
-  std::cout << log_level_to_string(level) << message << '\n';
+  try {
+    auto message = std::vformat(fmt, std::make_format_args(args...));
+    std::cout << log_level_to_string(level) << message << '\n';
+  } catch (const std::format_error &e) {
+    std::cout << log_level_to_string(GGML_LOG_LEVEL_ERROR)
+              << "print(): std::format_error: " << e.what()
+              << "  fmt=\"" << fmt << "\"\n";
+  }
 }
 
 struct Parameters {
@@ -130,7 +136,7 @@ public:
     }
     this->tokens << "step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob\n";
 
-    this->write_metadata(/*complete=*/false, 0, 0, 0, 0, 0.0, 0.0);
+    this->write_meta(/*complete=*/false, 0, 0, 0, 0, 0.0, 0.0);
   }
 
   void record_token(
@@ -165,8 +171,8 @@ public:
       double decode_ms) {
     this->tokens.flush();
     this->tokens.close();
-    this->write_metadata(/*complete=*/true, n_decoded_tokens, n_drafted,
-                         n_accepted_drafts, n_bonus_samples, prompt_ms, decode_ms);
+    this->write_meta(/*complete=*/true, n_decoded_tokens, n_drafted,
+                     n_accepted_drafts, n_bonus_samples, prompt_ms, decode_ms);
   }
 
   const std::filesystem::path &dir() const { return this->run_dir; }
@@ -187,15 +193,15 @@ public:
   }
 
 private:
-  void write_metadata(bool complete,
-                      int64_t n_decoded_tokens,
-                      int64_t n_drafted,
-                      int64_t n_accepted_drafts,
-                      int64_t n_bonus_samples,
-                      double prompt_ms,
-                      double decode_ms) {
-    const std::filesystem::path final_path = this->run_dir / "metadata.json";
-    const std::filesystem::path tmp_path = this->run_dir / "metadata.json.tmp";
+  void write_meta(bool complete,
+                  int64_t n_decoded_tokens,
+                  int64_t n_drafted,
+                  int64_t n_accepted_drafts,
+                  int64_t n_bonus_samples,
+                  double prompt_ms,
+                  double decode_ms) {
+    const std::filesystem::path final_path = this->run_dir / "meta.json";
+    const std::filesystem::path tmp_path = this->run_dir / "meta.json.tmp";
 
     std::ofstream m(tmp_path);
     if (!m) {
@@ -421,7 +427,7 @@ private:
     print(GGML_LOG_LEVEL_NONE, "Output / reproducibility:");
     print(GGML_LOG_LEVEL_NONE, "  --seed <n>               sampler seed (default: {})", this->params.seed);
     print(GGML_LOG_LEVEL_NONE, "  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
-    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{metadata.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
+    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
     print(GGML_LOG_LEVEL_NONE, "");
     print(GGML_LOG_LEVEL_NONE, "Misc:");
     print(GGML_LOG_LEVEL_NONE, "  -h, --help               print this message and exit");
@@ -1056,7 +1062,7 @@ private:
                         n_bonus_samples,
                         prompt_ms, decode_ms);
       print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
-            (recorder.dir() / "metadata.json").string(),
+            (recorder.dir() / "meta.json").string(),
             (recorder.dir() / "tokens.csv").string());
 
       llama_perf_sampler_print(this->sampler_tgt);
@@ -1129,7 +1135,7 @@ private:
                       /*n_bonus_samples=*/0,
                       prompt_ms, decode_ms);
     print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
-          (recorder.dir() / "metadata.json").string(),
+          (recorder.dir() / "meta.json").string(),
           (recorder.dir() / "tokens.csv").string());
 
     // __asm volatile("int3");
