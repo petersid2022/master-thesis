@@ -81,7 +81,7 @@ struct Parameters // {{{
   // hard cap on generated tokens (0 = unlimited, stop only on EOS / KV exhaustion)
   int64_t n_predict = 0;
 
-  bool speculative_decoding_is_enabled() {
+  bool draft_speculative_decoding_is_enabled() {
     if (!this->dft_model_path.empty()) {
       return true;
     }
@@ -346,7 +346,7 @@ public:
 
   ~Application() {
     llama_sampler_free(sampler_tgt);
-    if (params.speculative_decoding_is_enabled()) {
+    if (params.draft_speculative_decoding_is_enabled()) {
       llama_sampler_free(sampler_dft);
       llama_batch_free(speculation_batch_tgt);
       llama_batch_free(speculation_batch_dft);
@@ -405,33 +405,67 @@ private:
   void print_usage(char **argv) { // {{{
     const char *name = argv[0];
 
-    print(GGML_LOG_LEVEL_WARN, "Usage: {} --target-model <file.gguf> [OPTIONS]", name);
-    print(GGML_LOG_LEVEL_WARN, "");
-    print(GGML_LOG_LEVEL_WARN, "Options:");
-    print(GGML_LOG_LEVEL_WARN, "  --temp <n>               temperature (default: {})", this->params.temp);
-    print(GGML_LOG_LEVEL_WARN, "  --top-p <n>              top-p sampling (default: {})", this->params.top_p);
-    print(GGML_LOG_LEVEL_WARN, "  --top-k <n>              top-k sampling (default: {})", this->params.top_k);
-    print(GGML_LOG_LEVEL_WARN, "  --greedy                 greedy sampler (select the token with the highest prob) (default: {})", this->params.greedy ? "true" : "false");
-    print(GGML_LOG_LEVEL_WARN, "  --prompt <text>          initial prompt (default: \"{}\")", this->params.prompt);
-    print(GGML_LOG_LEVEL_WARN, "  --target-model <file>    gguf target model file (required)");
-    print(GGML_LOG_LEVEL_WARN, "  --draft-model <file>     gguf draft model file (required for speculative decoding)");
-    print(GGML_LOG_LEVEL_WARN, "  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
-    print(GGML_LOG_LEVEL_WARN, "  --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
-    print(GGML_LOG_LEVEL_WARN, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
-    print(GGML_LOG_LEVEL_WARN, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
-    print(GGML_LOG_LEVEL_WARN, "  --seed <n>               sampler seed (default: {})", this->params.seed);
-    print(GGML_LOG_LEVEL_WARN, "  --results-dir <path>     where to write meta.json + tokens.csv (default: \"{}\")", this->params.results_dir);
-    print(GGML_LOG_LEVEL_WARN, "  --run-id <id>            unique run identifier (default: auto-generated)");
-    print(GGML_LOG_LEVEL_WARN, "  --n-predict <n>          hard cap on generated tokens (0 = unlimited, default: {})", this->params.n_predict);
-    print(GGML_LOG_LEVEL_WARN, "");
-    print(GGML_LOG_LEVEL_WARN, "Example:");
-    print(GGML_LOG_LEVEL_WARN, "  {} --target-model Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf --prompt \"Tell me a joke\" --ctx-size 8192 --n-gpu-layers 40", name);
+    // Truncate the default prompt for display so a 350-char boilerplate doesn't
+    // dominate the help text.
+    constexpr std::size_t PROMPT_PREVIEW_MAX = 60;
+    std::string prompt_preview = this->params.prompt;
+    if (prompt_preview.size() > PROMPT_PREVIEW_MAX) {
+      prompt_preview = prompt_preview.substr(0, PROMPT_PREVIEW_MAX) + "...";
+    }
+
+    print(GGML_LOG_LEVEL_NONE, "Usage: {} --target-model <file.gguf> [--draft-model <file.gguf>] [OPTIONS]", name);
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Speculative decoding runs whenever --draft-model is given; otherwise the");
+    print(GGML_LOG_LEVEL_NONE, "binary runs vanilla autoregressive decoding against the target model only.");
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Models:");
+    print(GGML_LOG_LEVEL_NONE, "  --target-model <file>    gguf target model file (required)");
+    print(GGML_LOG_LEVEL_NONE, "  --draft-model <file>     gguf draft model file (enables speculative decoding)");
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Runtime:");
+    print(GGML_LOG_LEVEL_NONE, "  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
+    print(GGML_LOG_LEVEL_NONE, "  --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
+    print(GGML_LOG_LEVEL_NONE, "  --n-predict <n>          hard cap on generated tokens (0 = unlimited) (default: {})", this->params.n_predict);
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Sampling:");
+    print(GGML_LOG_LEVEL_NONE, "  --temp <n>               temperature (default: {})", this->params.temp);
+    print(GGML_LOG_LEVEL_NONE, "  --top-p <n>              top-p sampling (default: {})", this->params.top_p);
+    print(GGML_LOG_LEVEL_NONE, "  --top-k <n>              top-k sampling (default: {})", this->params.top_k);
+    print(GGML_LOG_LEVEL_NONE, "  --greedy                 greedy sampler; overrides temp/top-p/top-k (default: {})", this->params.greedy ? "true" : "false");
+    print(GGML_LOG_LEVEL_NONE, "  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Speculation (only effective when --draft-model is set):");
+    print(GGML_LOG_LEVEL_NONE, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
+    print(GGML_LOG_LEVEL_NONE, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Output / reproducibility:");
+    print(GGML_LOG_LEVEL_NONE, "  --seed <n>               sampler seed (default: {})", this->params.seed);
+    print(GGML_LOG_LEVEL_NONE, "  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
+    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Misc:");
+    print(GGML_LOG_LEVEL_NONE, "  -h, --help               print this message and exit");
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "Examples:");
+    print(GGML_LOG_LEVEL_NONE, "  # vanilla autoregressive baseline");
+    print(GGML_LOG_LEVEL_NONE, "  {} --target-model Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf \\", name);
+    print(GGML_LOG_LEVEL_NONE, "      --prompt \"Tell me a joke\" --ctx-size 8192 --n-gpu-layers -1 \\");
+    print(GGML_LOG_LEVEL_NONE, "      --n-predict 256 --seed 42 --run-id ar-baseline_seed42");
+    print(GGML_LOG_LEVEL_NONE, "");
+    print(GGML_LOG_LEVEL_NONE, "  # speculative decoding with a smaller draft model");
+    print(GGML_LOG_LEVEL_NONE, "  {} --target-model Nemotron-3-Nano-4B-BF16.gguf \\", name);
+    print(GGML_LOG_LEVEL_NONE, "      --draft-model Nemotron-3-Nano-4B-Q8_0.gguf \\");
+    print(GGML_LOG_LEVEL_NONE, "      --n-max 8 --n-predict 256 --seed 42 --run-id spec-nmax8_seed42");
   } // }}}
 
   void parse_cli_args(int argc, char **argv) { // {{{
     for (int i = 1; i < argc; i++) {
       try {
-        if (std::strcmp(argv[i], "--target-model") == 0) {
+        if (std::strcmp(argv[i], "-h") == 0 ||
+            std::strcmp(argv[i], "--help") == 0) {
+          print_usage(argv);
+          std::exit(0);
+        } else if (std::strcmp(argv[i], "--target-model") == 0) {
           if (i + 1 < argc) {
             this->params.tgt_model_path = argv[++i];
           } else {
@@ -546,7 +580,7 @@ private:
 
     if (this->params.tgt_model_path.empty()) {
       print_usage(argv);
-      throw std::runtime_error("Error: --target-model (-tgt) argument is required");
+      throw std::runtime_error("Error: --target-model argument is required");
     }
   } // }}}
 
@@ -616,7 +650,7 @@ private:
         throw std::runtime_error("failed to load target model");
       }
 
-      if (this->params.speculative_decoding_is_enabled()) {
+      if (this->params.draft_speculative_decoding_is_enabled()) {
         this->model_dft = llama_model_load_from_file(this->params.dft_model_path.c_str(), params);
         if (!this->model_dft) {
           throw std::runtime_error("failed to load draft model");
@@ -624,7 +658,7 @@ private:
       }
 
       print(GGML_LOG_LEVEL_INFO, "tgt_llama_model_n_params:    {}", llama_model_n_params(this->model_tgt));
-      if (this->params.speculative_decoding_is_enabled()) {
+      if (this->params.draft_speculative_decoding_is_enabled()) {
         print(GGML_LOG_LEVEL_INFO, "dft_llama_model_n_params:    {}", llama_model_n_params(this->model_dft));
       }
 
@@ -638,7 +672,7 @@ private:
         throw std::runtime_error("failed to create the llama_context for target");
       }
 
-      if (this->params.speculative_decoding_is_enabled()) {
+      if (this->params.draft_speculative_decoding_is_enabled()) {
         this->ctx_dft = llama_init_from_model(this->model_dft, ctx_params);
         if (!this->ctx_dft) {
           throw std::runtime_error("failed to create the llama_context for draft");
@@ -651,7 +685,7 @@ private:
       print(GGML_LOG_LEVEL_INFO, "tgt_llama_n_ubatch:     {}", llama_n_ubatch(this->ctx_tgt));
       print(GGML_LOG_LEVEL_INFO, "tgt_llama_n_seq_max:    {}", llama_n_seq_max(this->ctx_tgt));
 
-      if (this->params.speculative_decoding_is_enabled()) {
+      if (this->params.draft_speculative_decoding_is_enabled()) {
         print(GGML_LOG_LEVEL_INFO, "dft_llama_n_ctx:        {}", llama_n_ctx(this->ctx_dft));
         print(GGML_LOG_LEVEL_INFO, "dft_llama_n_ctx_seq:    {}", llama_n_ctx_seq(this->ctx_dft));
         print(GGML_LOG_LEVEL_INFO, "dft_llama_n_batch:      {}", llama_n_batch(this->ctx_dft));
@@ -671,7 +705,7 @@ private:
   void tokenize(void) { // {{{
     this->vocab_tgt = llama_model_get_vocab(this->model_tgt);
 
-    if (this->params.speculative_decoding_is_enabled()) {
+    if (this->params.draft_speculative_decoding_is_enabled()) {
       this->vocab_dft = llama_model_get_vocab(this->model_dft);
     }
 
@@ -703,7 +737,7 @@ private:
       throw std::runtime_error(std::format("the prompt exceeds the batch size ({} tokens, batch {})", prompt_tgt.size(), llama_n_batch(this->ctx_tgt)));
     }
 
-    if (this->params.speculative_decoding_is_enabled()) {
+    if (this->params.draft_speculative_decoding_is_enabled()) {
       if (llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
           (llama_vocab_get_add_bos(vocab_tgt) && llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft))) {
         throw std::runtime_error(std::format(
@@ -788,7 +822,7 @@ private:
       llama_sampler_chain_add(this->sampler_tgt, llama_sampler_init_dist(this->params.seed));
     }
 
-    if (this->params.speculative_decoding_is_enabled()) {
+    if (this->params.draft_speculative_decoding_is_enabled()) {
       // context holds the size of batch
       this->speculation_batch_tgt = llama_batch_init(llama_n_batch(this->ctx_tgt), 0, 1);
       this->speculation_batch_dft = llama_batch_init(llama_n_batch(this->ctx_dft), 0, 1);
@@ -846,7 +880,7 @@ private:
     // Auto-generate a run-id if none was supplied.
     if (this->params.run_id.empty()) {
       const std::string ts = RunRecorder::iso_timestamp(/*compact=*/true);
-      const std::string mode = this->params.speculative_decoding_is_enabled() ? "spec" : "ar";
+      const std::string mode = this->params.draft_speculative_decoding_is_enabled() ? "spec" : "ar";
       this->params.run_id = std::format("{}_{}_seed{}", ts, mode, this->params.seed);
     }
 
@@ -858,7 +892,7 @@ private:
     const int64_t t_start_total = ggml_time_us();
     int64_t t_after_prompt = 0;
 
-    if (this->params.speculative_decoding_is_enabled()) {
+    if (this->params.draft_speculative_decoding_is_enabled()) {
       print(GGML_LOG_LEVEL_INFO, "Speculative Decoding is enabled");
 
       char buf[1024] = {0};
