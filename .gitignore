@@ -11,6 +11,8 @@ models/
 RSD/
 ssd/
 .venv/
+results/spectre/
+spectre/presentation/png/
 *.aux
 *.fdb_latexmk
 *.fls
