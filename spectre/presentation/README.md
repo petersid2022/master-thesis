@@ -1,8 +1,7 @@
 # Spectre presentation assets
 
 Figures and slides for "Optimizing text generation with large language models via
-speculative sampling". Built around `spectre/src/main.cpp` and three upstream
-`llama.cpp` contributions.
+speculative sampling".
 
 ## Files
 
