@@ -76,6 +76,8 @@ TOP_K="${TOP_K:-40}"
 SEEDS="${SEEDS:-42}"              # add more for error bars: SEEDS="42 43 44"
 N_MAX_VALUES="${N_MAX_VALUES:-4 8}"   # speculative draft lengths to sweep; empty = AR only
 NGRAM="${NGRAM:-1}"               # 1 = also run hybrid (model + ngram) variant per n_max; 0 = model only
+N_GRAM_SIZE="${N_GRAM_SIZE:-2}"   # lookup pattern length for the n-gram drafter
+M_GRAM_SIZE="${M_GRAM_SIZE:-12}"  # max draft length proposed after an n-gram hit
 RESULTS_DIR="${RESULTS_DIR:-results/spectre}"
 TIMEOUT="${TIMEOUT:-300}"         # seconds per run; 0 disables
 FORCE="${FORCE:-0}"               # 1 = re-run even if meta.json says complete
@@ -135,7 +137,7 @@ echo "  n_predict:     $N_PREDICT     ctx: $CTX     ngl: $NGL"
 echo "  sampler:       temp=$TEMP top_p=$TOP_P top_k=$TOP_K"
 echo "  seeds:         $SEEDS"
 echo "  n_max sweep:   ${N_MAX_VALUES:-<none>}"
-echo "  ngram hybrid:  $([[ "$NGRAM" == "1" ]] && echo "yes (+1 run per n_max)" || echo "no")"
+echo "  ngram hybrid:  $([[ "$NGRAM" == "1" ]] && echo "yes (+1 run per n_max)  N=$N_GRAM_SIZE M=$M_GRAM_SIZE" || echo "no")"
 echo "  results dir:   $RESULTS_DIR"
 echo "  timeout/run:   ${TIMEOUT}s     force re-run: $FORCE"
 echo "  total runs:    $total"
@@ -187,7 +189,7 @@ except Exception:
     args+=( --draft-model "$dft" --n-max "$nmax" )
   fi
   if [[ "$ngram" == "1" ]]; then
-    args+=( --ngram )
+    args+=( --ngram --n-gram-size "$N_GRAM_SIZE" --m-gram-size "$M_GRAM_SIZE" )
   fi
 
   printf "[%2d/%d] %-32s running... " "$idx" "$total" "$run_id"

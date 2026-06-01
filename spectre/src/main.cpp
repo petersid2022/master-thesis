@@ -62,6 +62,12 @@ struct Parameters {
 
   // the n-gram cache implementation maintains statistics about short n-gram sequences.
   bool ngram = false;
+  // length of the lookup pattern (n-gram). lower values fire more often on short prompts,
+  // higher values reduce false positives on long prompts. llama.cpp defaults to 12, which only
+  // hits in long contexts; 2-4 is a good range for benchmarks under a few hundred tokens.
+  int32_t n_gram_size = 2;
+  // maximum length of the proposed draft (m-gram) following an n-gram hit.
+  int32_t m_gram_size = 12;
 
   // "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751
   float top_p = 0.90f;
@@ -232,6 +238,9 @@ private:
     m << "    \"ngl\": " << p.ngl << ",\n";
     m << "    \"n_min\": " << p.n_min << ",\n";
     m << "    \"n_max\": " << p.n_max << ",\n";
+    m << "    \"ngram\": " << (p.ngram ? "true" : "false") << ",\n";
+    m << "    \"n_gram_size\": " << p.n_gram_size << ",\n";
+    m << "    \"m_gram_size\": " << p.m_gram_size << ",\n";
     m << "    \"temp\": " << p.temp << ",\n";
     m << "    \"top_p\": " << p.top_p << ",\n";
     m << "    \"top_k\": " << p.top_k << ",\n";
@@ -389,9 +398,6 @@ private:
   const struct llama_vocab *vocab_target = nullptr;
   const struct llama_vocab *vocab_draft = nullptr;
 
-  static constexpr int n_gram_size = 12;
-  static constexpr int m_gram_size = 48;
-
   // p_draft for each token returned by the last call to draft(), parallel to the returned vector.
   std::vector<double> last_draft_probs;
 
@@ -427,7 +433,9 @@ private:
     print(GGML_LOG_LEVEL_NONE, "  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
     print(GGML_LOG_LEVEL_NONE, "");
     print(GGML_LOG_LEVEL_NONE, "Speculation (only effective when --draft-model is set):");
-    print(GGML_LOG_LEVEL_NONE, "  --ngram                  n-gram cache implementation maintains statistics about short n-gram sequences (default: {})", this->params.ngram);
+    print(GGML_LOG_LEVEL_NONE, "  --ngram                  enable n-gram drafter (hybrid: ngram first, draft model on miss) (default: {})", this->params.ngram);
+    print(GGML_LOG_LEVEL_NONE, "  --n-gram-size <n>        lookup pattern length for the n-gram drafter (default: {})", this->params.n_gram_size);
+    print(GGML_LOG_LEVEL_NONE, "  --m-gram-size <n>        max draft length proposed after an n-gram hit (default: {})", this->params.m_gram_size);
     print(GGML_LOG_LEVEL_NONE, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
     print(GGML_LOG_LEVEL_NONE, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
     print(GGML_LOG_LEVEL_NONE, "");
@@ -511,6 +519,20 @@ private:
           this->params.greedy = true;
         } else if (std::strcmp(argv[i], "--ngram") == 0) {
           this->params.ngram = true;
+        } else if (std::strcmp(argv[i], "--n-gram-size") == 0) {
+          if (i + 1 < argc) {
+            this->params.n_gram_size = std::stoi(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --n-gram-size");
+          }
+        } else if (std::strcmp(argv[i], "--m-gram-size") == 0) {
+          if (i + 1 < argc) {
+            this->params.m_gram_size = std::stoi(argv[++i]);
+          } else {
+            print_usage(argv);
+            throw std::runtime_error("Missing argument for --m-gram-size");
+          }
         } else if (std::strcmp(argv[i], "--top-k") == 0) {
           if (i + 1 < argc) {
             this->params.top_k = std::stoi(argv[++i]);
@@ -856,9 +878,6 @@ private:
         llama_sampler_chain_add(this->sampler_draft, llama_sampler_init_dist(this->params.seed));
       }
     }
-
-    // prepare first batch of tokens aka the prompt
-    this->batch = llama_batch_get_one(prompt_target.data(), prompt_target.size());
 
     // TODO remove; this is not required since most models are decoder only
     // if (llama_model_has_encoder(this->model_target)) {
@@ -1267,8 +1286,8 @@ private:
   std::vector<llama_token> draft_ngram() {
     const auto &tokens = this->prompt_target;
     const llama_token sampled = this->last_token;
-    const size_t N = (size_t)this->n_gram_size;
-    const size_t M = (size_t)this->m_gram_size;
+    const size_t N = (size_t)this->params.n_gram_size;
+    const size_t M = (size_t)this->params.m_gram_size;
     const size_t cur_len = tokens.size();
     std::vector<llama_token> result;
     if (cur_len <= N + M + 1) return result;
