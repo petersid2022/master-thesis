@@ -17,7 +17,7 @@
 
 #include "llama-cpp.h"
 
-static inline const char *log_level_to_string(enum ggml_log_level level) { // {{{
+static inline const char *log_level_to_string(enum ggml_log_level level) {
   switch (level) {
   case GGML_LOG_LEVEL_DEBUG:
     return "[DEBUG] ";
@@ -32,16 +32,15 @@ static inline const char *log_level_to_string(enum ggml_log_level level) { // {{
   default:
     return "";
   }
-} // }}}
+}
 
-template <typename... Args> // {{{
+template <typename... Args>
 static inline void print(enum ggml_log_level level, std::string_view fmt, Args &&...args) {
   auto message = std::vformat(fmt, std::make_format_args(args...));
   std::cout << log_level_to_string(level) << message << '\n';
-} // }}}
+}
 
-struct Parameters // {{{
-{
+struct Parameters {
   // the number of layers to store in VRAM (<0 means all layers)
   int32_t ngl = -1;
 
@@ -87,9 +86,9 @@ struct Parameters // {{{
     }
     return false;
   }
-}; // }}}
+};
 
-class TeeBuf : public std::streambuf { // {{{
+class TeeBuf : public std::streambuf {
 public:
   TeeBuf(std::streambuf *sb1, std::streambuf *sb2) : sb1(sb1), sb2(sb2) {}
 
@@ -107,9 +106,8 @@ protected:
 private:
   std::streambuf *sb1;
   std::streambuf *sb2;
-}; // }}}
+};
 
-// {{{ structured per-run output (meta.json + tokens.csv)
 struct RoundSummary {
   int n_drafted;
   int n_accepted_drafts;
@@ -329,10 +327,8 @@ private:
   std::vector<RoundSummary> rounds;
   int step = 0;
 };
-// }}}
 
-class Application // {{{
-{
+class Application {
 public:
   Application(int argc, char **argv) {
     this->parse_cli_args(argc, argv);
@@ -402,7 +398,7 @@ private:
   // p_draft for each token returned by the last call to draft(), parallel to the returned vector.
   std::vector<double> last_draft_probs;
 
-  void print_usage(char **argv) { // {{{
+  void print_usage(char **argv) {
     const char *name = argv[0];
 
     // Truncate the default prompt for display so a 350-char boilerplate doesn't
@@ -456,9 +452,9 @@ private:
     print(GGML_LOG_LEVEL_NONE, "  {} --target-model Nemotron-3-Nano-4B-BF16.gguf \\", name);
     print(GGML_LOG_LEVEL_NONE, "      --draft-model Nemotron-3-Nano-4B-Q8_0.gguf \\");
     print(GGML_LOG_LEVEL_NONE, "      --n-max 8 --n-predict 256 --seed 42 --run-id spec-nmax8_seed42");
-  } // }}}
+  }
 
-  void parse_cli_args(int argc, char **argv) { // {{{
+  void parse_cli_args(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
       try {
         if (std::strcmp(argv[i], "-h") == 0 ||
@@ -582,11 +578,11 @@ private:
       print_usage(argv);
       throw std::runtime_error("Error: --target-model argument is required");
     }
-  } // }}}
+  }
 
   // Compute (logit, prob) for `token` from a logits row, using `vocab` for the row width.
   // Defaults to the target vocab for backward-compatibility with existing call sites.
-  std::tuple<double, double> softmax( // {{{
+  std::tuple<double, double> softmax(
       const float *logits_row,
       const llama_token token,
       const struct llama_vocab *vocab = nullptr) {
@@ -610,9 +606,9 @@ private:
     const double prob = std::exp((double)logit - max_logit) / denom;
 
     return std::make_tuple(logit, prob);
-  } // }}}
+  }
 
-  void initialize(void) { // {{{
+  void initialize(void) {
 #if 0
     this->log_file.open("log.txt", std::ios::out | std::ios::trunc);
     if (!this->log_file) {
@@ -700,9 +696,9 @@ private:
       this->tee_buf.reset();
       throw;
     }
-  } // }}}
+  }
 
-  void tokenize(void) { // {{{
+  void tokenize(void) {
     this->vocab_tgt = llama_model_get_vocab(this->model_tgt);
 
     if (this->params.draft_speculative_decoding_is_enabled()) {
@@ -799,9 +795,9 @@ private:
 
     print(GGML_LOG_LEVEL_INFO, "llama_vocab_n_tokens:    {}", llama_vocab_n_tokens(this->vocab_tgt));
     print(GGML_LOG_LEVEL_INFO, "llama_vocab_type:        {}", (int)llama_vocab_type(this->vocab_tgt));
-  } // }}}
+  }
 
-  void decode(void) { // {{{
+  void decode(void) {
     struct llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
 
     sampler_params.no_perf = false;
@@ -866,9 +862,9 @@ private:
     //
     //   current_batch = llama_batch_get_one(&decoder_start_token_id, 1);
     // }
-  } // }}}
+  }
 
-  void run(void) { // {{{
+  void run(void) {
     // current accepted token each pass
     llama_token current_token = -1;
     std::size_t tokens_decoded = 0;
@@ -1159,13 +1155,13 @@ private:
     // __asm volatile("int3");
     llama_perf_sampler_print(this->sampler_tgt);
     llama_perf_context_print(this->ctx_tgt);
-  } // }}}
+  }
 
-  void reset_batch(llama_batch &batch) { // {{{
+  void reset_batch(llama_batch &batch) {
     batch.n_tokens = 0;
-  } // }}}
+  }
 
-  void create_new_batch( // {{{
+  void create_new_batch(
       llama_batch &batch,
       int32_t max_tokens,
       llama_token id,
@@ -1182,9 +1178,9 @@ private:
     batch.seq_id[batch.n_tokens][0] = 0;
     batch.logits[batch.n_tokens] = output;
     batch.n_tokens++;
-  } // }}}
+  }
 
-  std::vector<llama_token> sample_and_accept( // {{{
+  std::vector<llama_token> sample_and_accept(
       llama_sampler *sampler,
       llama_context *ctx,
       const std::vector<llama_token> &draft) {
@@ -1212,9 +1208,9 @@ private:
     accepted.push_back(id);
 
     return accepted;
-  } // }}}
+  }
 
-  std::vector<llama_token> draft(void) { // {{{
+  std::vector<llama_token> draft(void) {
     llama_memory_t mem_dft = llama_get_memory(this->ctx_dft);
 
     // TODO implement reuse context window mechanism
@@ -1389,11 +1385,10 @@ private:
     }
 
     return result;
-  } // }}}
+  }
+};
 
-}; // }}}
-
-int main(int argc, char **argv) { // {{{
+int main(int argc, char **argv) {
   try {
     Application app(argc, argv);
     app.start();
@@ -1402,4 +1397,4 @@ int main(int argc, char **argv) { // {{{
     return 1;
   }
   return 0;
-} // }}}
+}

@@ -32,6 +32,17 @@ target_link_libraries(main PRIVATE PkgConfig::LLAMA)
 target_link_options(main PRIVATE
   "-Wl,-rpath-link,${LLAMA_DIR}/build/bin")
 
+foreach(_cuda_stub_dir
+    /usr/local/cuda/lib64/stubs
+    /usr/local/cuda/targets/x86_64-linux/lib/stubs)
+  if(EXISTS "${_cuda_stub_dir}/libcuda.so")
+    message(STATUS "spectre: linking against CUDA driver stub at ${_cuda_stub_dir}")
+    target_link_directories(main PRIVATE "${_cuda_stub_dir}")
+    target_link_libraries(main PRIVATE cuda)
+    break()
+  endif()
+endforeach()
+
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 if(ENABLE_ASAN)
   target_compile_options(main PRIVATE -fsanitize=address,leak
