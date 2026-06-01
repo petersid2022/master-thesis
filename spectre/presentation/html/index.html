@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Spectre — thesis dashboard</title>
+    <title>Optimizing text generation with large language models via speculative sampling</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -63,22 +63,6 @@
       .thumb:hover { transform: translateY(-2px); border-color: var(--accent); }
       .thumb img { width: 100%; height: 7rem; object-fit: cover; object-position: top; border-radius: 4px; background: white; }
       .thumb .caption { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.4rem; line-height: 1.3; }
-      .kpis {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
-        gap: 0.75rem;
-        margin: 1rem 0 0.5rem;
-      }
-      .kpi {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 0.6rem 0.8rem;
-        text-align: center;
-      }
-      .kpi .v { font-size: 1.25rem; font-weight: 600; color: var(--text); }
-      .kpi .v.good { color: var(--draft); }
-      .kpi .l { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
       .code-list {
         font-family: "JetBrains Mono", monospace;
         font-size: 0.85rem;
@@ -94,24 +78,7 @@
   <body>
     <main style="max-width: 64rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem">
       <div class="index-hero">
-        <h1>Spectre — thesis dashboard</h1>
-        <p class="lead" style="margin-bottom: 0.5rem">
-          <strong>Optimizing text generation with large language models via speculative sampling</strong>
-          — masters thesis, ECE.
-        </p>
-        <p class="note">
-          Built around <code>spectre/src/main.cpp</code> (custom libllama-based speculative
-          decoder) and three upstream <code>llama.cpp</code> contributions. This page is the
-          single entry point for everything in <code>spectre/presentation/</code>.
-        </p>
-        <div class="kpis">
-          <div class="kpi"><div class="v">3</div><div class="l">llama.cpp PRs</div></div>
-          <div class="kpi"><div class="v">14</div><div class="l">conceptual diagrams</div></div>
-          <div class="kpi"><div class="v">7</div><div class="l">data-driven figures</div></div>
-          <div class="kpi"><div class="v">spec</div><div class="l">+ <code>ar</code> modes instrumented</div></div>
-          <div class="kpi"><div class="v">JSON+CSV</div><div class="l">per-run output</div></div>
-          <div class="kpi"><div class="v">re-run</div><div class="l">after refactor</div></div>
-        </div>
+        <h1>Optimizing text generation with large language models via speculative sampling</h1>
       </div>
 
       <h2 class="section-title">Browse the figures</h2>
@@ -146,34 +113,34 @@
       </div>
 
       <h2 class="section-title">Quality results — at a glance</h2>
-      <p class="section-sub">Click any thumbnail to open the dedicated page.</p>
+      <p class="section-sub">Click any thumbnail to open the dedicated page. Missing figures hide themselves until you regenerate them.</p>
       <div class="thumb-grid">
         <a class="thumb" href="quality.html#losslessness">
-          <img src="png/quality-ppl-trace.png" alt="" />
+          <img src="png/quality-ppl-trace.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>1.</strong> Per-token logprob + cumulative PPL (losslessness sanity check)</span>
         </a>
         <a class="thumb" href="quality.html#difficulty">
-          <img src="png/quality-target-prob-hist.png" alt="" />
+          <img src="png/quality-target-prob-hist.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>2.</strong> Distribution of <code>p_target</code> on accepted tokens</span>
         </a>
         <a class="thumb" href="quality.html#acceptance">
-          <img src="png/quality-acceptance-by-run.png" alt="" />
+          <img src="png/quality-acceptance-by-run.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>3.</strong> Acceptance rate per run</span>
         </a>
         <a class="thumb" href="quality.html#frontier">
-          <img src="png/quality-speed-vs-accept.png" alt="" />
+          <img src="png/quality-speed-vs-accept.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>4.</strong> Efficiency frontier: speed vs. acceptance</span>
         </a>
         <a class="thumb" href="quality.html#per-position">
-          <img src="png/quality-per-position-empirical.png" alt="" />
+          <img src="png/quality-per-position-empirical.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>5.</strong> Empirical per-position acceptance + Bernoulli model</span>
         </a>
         <a class="thumb" href="quality.html#per-position">
-          <img src="png/quality-draft-vs-target-prob.png" alt="" />
-          <span class="caption"><strong>6.</strong> p_draft vs. p_target on accepted tokens (new)</span>
+          <img src="png/quality-draft-vs-target-prob.png" alt="" onerror="this.parentNode.style.display='none'" />
+          <span class="caption"><strong>6.</strong> p_draft vs. p_target on accepted tokens</span>
         </a>
         <a class="thumb" href="quality.html#per-position">
-          <img src="png/quality-rounds-histogram.png" alt="" />
+          <img src="png/quality-rounds-histogram.png" alt="" onerror="this.parentNode.style.display='none'" />
           <span class="caption"><strong>7.</strong> Accepted-per-call histogram + geometric overlay</span>
         </a>
       </div>
@@ -184,9 +151,10 @@
         <li><a href="../../src/main.cpp">spectre/src/main.cpp</a><span class="desc">— custom libllama speculative decoder with structured-output instrumentation</span></li>
         <li><a href="../../../results/spectre/">results/spectre/&lt;run-id&gt;/</a><span class="desc">— per-run <code>meta.json</code> + <code>tokens.csv</code>; one directory per spectre invocation</span></li>
         <li><a href="../../scripts/quality_eval.py">spectre/scripts/quality_eval.py</a><span class="desc">— builds the 7 quality figures from <code>results/spectre/*/</code></span></li>
-        <li><a href="../../scripts/visualize.py">spectre/scripts/visualize.py</a><span class="desc">— generic CSV plotter (older)</span></li>
-        <li><a href="../../scripts/benchmark.sh">spectre/scripts/benchmark.sh</a><span class="desc">— benchmark wrapper for the spectre CLI</span></li>
-        <li><a href="../../../benchmark.sh">benchmark.sh</a><span class="desc">— llama-server benchmark across all <code>--spec-type</code> values (separate engine; logs in <code>logs/</code>)</span></li>
+        <li><a href="../../scripts/benchmark.sh">spectre/scripts/benchmark.sh</a><span class="desc">— sweeps the spectre binary over (seed × n_max); writes <code>results/spectre/&lt;run-id&gt;/</code></span></li>
+        <li><a href="../../scripts/README.md">spectre/scripts/README.md</a><span class="desc">— pipeline overview + model-pair guidance</span></li>
+        <li><a href="../../../llama_cpp_benchmark.sh">llama_cpp_benchmark.sh</a><span class="desc">— llama-server benchmark across all <code>--spec-type</code> values (separate engine; logs in <code>logs/</code>)</span></li>
+        <li><a href="../../../llama_cpp_benchmark_speculative.sh">llama_cpp_benchmark_speculative.sh</a><span class="desc">— llama-server speculative variants of the above</span></li>
       </ul>
 
       <h2 class="section-title">Upstream contributions to <code>llama.cpp</code></h2>
@@ -215,32 +183,14 @@
       <h2 class="section-title">Written material</h2>
       <p class="section-sub">Long-form notes and presentation sources.</p>
       <ul class="code-list">
-        <li><a href="../../../notes.md">notes.md</a><span class="desc">— full thesis notebook: SD overview, algorithm, paper digests, future-work directions, and the new <strong>Quality Evaluation</strong> section</span></li>
-        <li><a href="../../../notes.md#quality-evaluation">notes.md → Quality Evaluation</a><span class="desc">— acceptance-rule derivation, TV-distance bound, PPL as sanity check, literature evals</span></li>
-        <li><a href="../quality_eval_slides.md">quality_eval_slides.md</a><span class="desc">— 8-slide outline for Tuesday</span></li>
-        <li><a href="../README.md">presentation/README.md</a><span class="desc">— how the presentation pipeline is organized</span></li>
+        <li><a href="../../../notes.md">notes.md</a><span class="desc">— full thesis notebook</span></li>
+        <li><a href="../quality_eval_slides.md">quality_eval_slides.md</a><span class="desc">— slide outline</span></li>
+        <li><a href="../README.md">presentation/README.md</a><span class="desc">— how to view and regenerate everything on this page</span></li>
         <li><a href="../mermaid/diagrams.md">mermaid/diagrams.md</a><span class="desc">— raw Mermaid sources (paste into mermaid.live)</span></li>
         <li><a href="../excalidraw/README.md">excalidraw/README.md</a><span class="desc">— hand-drawn slide workflow + starter scene</span></li>
         <li><a href="../../../thesis.pdf">thesis.pdf</a><span class="desc">— current LaTeX build</span></li>
       </ul>
 
-      <h2 class="section-title">Regenerate everything</h2>
-      <p class="section-sub">Single commands to rebuild figures from source data.</p>
-      <pre style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto; font-size: 0.9rem;"><code># Sweep spectre over (mode × draft length × seed)
-bash benchmark_spectre.sh
-
-# Or a single run (writes results/spectre/&lt;run-id&gt;/{meta.json,tokens.csv})
-spectre/build/main --target-model &lt;tgt.gguf&gt; [--draft-model &lt;dft.gguf&gt;] \
-  --seed 42 --n-predict 256 --run-id my-run-id --prompt "..."
-
-# 7 data-driven figures (results/spectre/*/ → quality-*.png)
-python3 spectre/scripts/quality_eval.py
-
-# Conceptual diagrams in atlas.html render client-side from Mermaid; no build step.
-
-# Local server if file:// links misbehave
-cd spectre/presentation/html &amp;&amp; python3 -m http.server 8765
-# then visit http://127.0.0.1:8765/</code></pre>
     </main>
   </body>
 </html>

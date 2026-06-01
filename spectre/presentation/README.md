@@ -1,58 +1,59 @@
 # Spectre presentation assets
 
-Figures for speculative decoding, aligned with `notes.md` and `spectre/src/main.cpp`.
+Figures and slides for "Optimizing text generation with large language models via
+speculative sampling". Built around `spectre/src/main.cpp` and three upstream
+`llama.cpp` contributions.
 
-## What's here
+## Files
 
 | Path | What it is |
 |------|-----------|
-| **`html/index.html`** | Dashboard / table of contents for everything |
-| **`html/atlas.html`** | 14 conceptual diagrams rendered via Mermaid (sidebar nav, print-friendly CSS) |
-| **`html/quality.html`** | 7 data-driven result figures from `quality_eval.py` |
-| **`mermaid/diagrams.md`** | Portable Mermaid sources for copy-pasting into [Mermaid Live](https://mermaid.live), GitHub/GitLab Markdown, or Obsidian |
-| **`excalidraw/`** | Hand-drawn slide workflow + `pipeline-starter.excalidraw` starter scene |
-| **`quality_eval_slides.md`** | 8-slide outline (+ 1 bonus) with body text, figure refs, and speaker notes |
+| `html/index.html` | Dashboard entry point |
+| `html/atlas.html` | Conceptual diagrams (Mermaid, sidebar nav, print-friendly) |
+| `html/quality.html` | Data-driven result figures from `quality_eval.py` |
+| `mermaid/diagrams.md` | Raw Mermaid sources (paste into [Mermaid Live](https://mermaid.live), GitHub Markdown, or Obsidian) |
+| `excalidraw/pipeline-starter.excalidraw` | Hand-drawn slide starter scene |
+| `excalidraw/README.md` | Hand-drawn slide workflow |
+| `quality_eval_slides.md` | Slide outline with body text, figure refs, and speaker notes |
+| `png/quality-*.png` | Generated quality figures (produced by `quality_eval.py`) |
 
-## How to view
+## View locally
 
-Open in a browser (double-click or static server):
+From the **repository root** (not from `html/`):
 
 ```bash
-cd spectre/presentation/html && python3 -m http.server 8765
-# visit http://127.0.0.1:8765/
+python3 -m http.server 8765
+# visit http://127.0.0.1:8765/spectre/presentation/html/index.html
 ```
 
-> `html/png` is a symlink to `../png`, which is auto-created by `quality_eval.py`
-> when it writes the result figures. The link resolves once you've generated them.
+The HTML files use relative paths like `../quality_eval_slides.md` and
+`../../../results/spectre/` that resolve only when the server's document root is
+the repo root. Running the server from inside `html/` will 404 those links.
 
-Diagrams render with [Mermaid](https://mermaid.js.org/) from a CDN. **Print → Save as PDF** from the atlas page for a static export.
+Mermaid diagrams render client-side from a CDN — **Print → Save as PDF** from the
+atlas page for a static export.
 
-## Data-driven figures (`quality.html`)
-
-Seven PNGs in `png/quality-*.png`, regenerated from `results/spectre/<run-id>/` by:
+## Regenerate the figures
 
 ```bash
+# 1. produce one or more results/spectre/<run-id>/{meta.json,tokens.csv}
+./spectre/scripts/benchmark.sh
+
+# 2. read every results/spectre/<run-id>/ and write spectre/presentation/png/quality-*.png
 python3 spectre/scripts/quality_eval.py
 ```
 
-Each run directory contains `meta.json` + `tokens.csv` written by the spectre
-binary itself (see `notes.md → Quality Evaluation → Data convention`).
-See `quality_eval_slides.md` for the matching 8-slide outline.
+After step 1 you can also drive single runs manually:
 
-## Conceptual diagrams (`atlas.html`)
+```bash
+./spectre/build/main \
+  --target-model <tgt.gguf> [--draft-model <dft.gguf>] \
+  --seed 42 --n-predict 256 --run-id my-run --prompt "..."
+```
 
-| Section | Content |
-|---------|---------|
-| AR vs speculative | Baseline loop vs draft-verify-rollback |
-| App lifecycle | `initialize` → `tokenize` → `decode` → `run` |
-| Target prefix init | `batch size N−1`, `last_token`, `pop_back` |
-| Draft prefix window | `i_start`, replay tail, `last_token`, draft loop |
-| One round | Linear pipeline stages |
-| Sample propagation | Sequence diagram: `prompt_tgt`, `last_token`, `accepted` |
-| `sample_and_accept` | Greedy match + bonus sample |
-| Verification batch | Positions `n_past …` |
-| `add_batch` | Slot fields |
-| KV rollback | `memory_seq_rm` |
-| Two-model | Draft vs target roles |
-| Vocab checks | Preconditions |
-| Future work | Mind map from `notes.md` |
+For sweep options, model-pair guidance, and the env-var reference, see
+[`spectre/scripts/README.md`](../scripts/README.md).
+
+Figures that haven't been generated yet are hidden automatically in `index.html`
+and `quality.html` — there is no broken-image state. As soon as the PNGs appear
+under `png/`, a refresh reveals them.

@@ -39,12 +39,7 @@
           <a href="#acceptance">3. Acceptance per speculator</a>
           <a href="#frontier">4. Speed–acceptance frontier</a>
           <a href="#per-position">5. Per-position decay</a>
-          <a href="#regen">How to regenerate</a>
         </nav>
-        <p class="note" style="margin-top: 1rem">
-          See also <a href="atlas.html">conceptual diagrams</a> and the
-          <a href="index.html">dashboard</a>.
-        </p>
       </aside>
 
       <main>
@@ -54,15 +49,8 @@
           <h2>Headline numbers</h2>
           <p class="lead">
             Populated automatically from each <code>results/spectre/&lt;run-id&gt;/meta.json</code>
-            once you collect fresh runs with the new <code>RunRecorder</code>-instrumented
-            spectre binary. See the
-            <a href="#regen">How to regenerate</a> section below for the exact commands.
-          </p>
-          <p class="note">
-            The previous llama-server n-gram benchmark numbers (Qwen3.5-9B Q8 on NVIDIA L4,
-            <code>ngram_cache</code> +8.9 %, etc.) lived in <code>logs/benchmark-logs/</code>
-            and were collected from a different engine. They're preserved in
-            <code>notes.md</code> for context but are no longer the source of these figures.
+            once you collect fresh runs with the spectre binary. See
+            <code>spectre/presentation/README.md</code> for the exact commands.
           </p>
         </article>
 
@@ -77,7 +65,7 @@
             proof of losslessness.
           </p>
           <figure class="diagram">
-            <img src="png/quality-ppl-trace.png" alt="Per-token log probability and cumulative perplexity" />
+            <img src="png/quality-ppl-trace.png" alt="Per-token log probability and cumulative perplexity" onerror="this.closest('article').style.display='none'" />
             <figcaption>
               <strong>Figure 1.</strong> Corpus PPL converges to 1.392. Most tokens are easy
               (<code>p ≈ 1</code>) — exactly the regime where an n-gram speculator can match
@@ -94,7 +82,7 @@
             speculate aggressively on the easy mass, fall back on the hard tail.
           </p>
           <figure class="diagram">
-            <img src="png/quality-target-prob-hist.png" alt="Histogram of target probability on accepted tokens" />
+            <img src="png/quality-target-prob-hist.png" alt="Histogram of target probability on accepted tokens" onerror="this.closest('article').style.display='none'" />
             <figcaption>
               <strong>Figure 2.</strong> Mean <code>p_target</code> = 0.77. Connects directly
               to AdaEDL / SpecDec++: stop drafting when local entropy is high.
@@ -110,7 +98,7 @@
             (0.201) — chain pays a per-round overhead for running 5 speculators.
           </p>
           <figure class="diagram">
-            <img src="png/quality-acceptance-by-run.png" alt="Mean draft acceptance rate per run" />
+            <img src="png/quality-acceptance-by-run.png" alt="Mean draft acceptance rate per run" onerror="this.closest('article').style.display='none'" />
             <figcaption>
               <strong>Figure 3.</strong> <code>ngram_simple</code> and the smart-pick chain
               collapse to nearly zero acceptance — they fail to match the boilerplate
@@ -127,7 +115,7 @@
             savings and you end up <em>slower</em> than the autoregressive baseline.
           </p>
           <figure class="diagram">
-            <img src="png/quality-speed-vs-accept.png" alt="Decode throughput vs. acceptance rate" />
+            <img src="png/quality-speed-vs-accept.png" alt="Decode throughput vs. acceptance rate" onerror="this.closest('article').style.display='none'" />
             <figcaption>
               <strong>Figure 4.</strong> Dashed line = baseline. <code>ngram_simple</code>
               and chain (smart pick) sit below it — negative speedup. <code>ngram_cache</code>
@@ -145,7 +133,7 @@
             call vs. draft length k — saturates by k ≈ 6 even for the best speculator.
           </p>
           <figure class="diagram">
-            <img src="png/quality-per-position-empirical.png" alt="Empirical per-position acceptance and expected accepted vs. draft length" />
+            <img src="png/quality-per-position-empirical.png" alt="Empirical per-position acceptance and expected accepted vs. draft length" onerror="this.closest('article').style.display='none'" />
             <figcaption>
               <strong>Figure 5.</strong> Direct motivation for adaptive draft length
               (AdaEDL, SpecDec++): static k is always a compromise; per-token confidence
@@ -155,37 +143,6 @@
           </figure>
         </article>
 
-        <article id="regen">
-          <h2>How to regenerate these figures</h2>
-          <p class="lead">
-            Two steps. First, run experiments — each spectre invocation produces one
-            self-contained run directory:
-          </p>
-          <pre style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto;"><code># target-only baseline
-spectre/build/main --target-model &lt;tgt.gguf&gt; --seed 42 \
-  --run-id ar-baseline-seed42 --prompt "..."
-
-# speculative
-spectre/build/main --target-model &lt;tgt.gguf&gt; --draft-model &lt;dft.gguf&gt; \
-  --seed 42 --run-id spec-dft1-seed42 --prompt "..."</code></pre>
-          <p class="lead">
-            Then regenerate all figures (one command, reads every <code>results/spectre/&lt;run-id&gt;/</code>):
-          </p>
-          <pre style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto;"><code>python3 spectre/scripts/quality_eval.py</code></pre>
-          <p class="lead">
-            Each run directory contains:
-          </p>
-          <ul>
-            <li><code>meta.json</code> — config snapshot + per-run aggregates + per-round summaries</li>
-            <li><code>tokens.csv</code> — per-token observations (<code>step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob</code>)</li>
-          </ul>
-          <p class="lead">
-            See the slide outline at
-            <a href="../quality_eval_slides.md"><code>spectre/presentation/quality_eval_slides.md</code></a>
-            and the full derivation + schema in
-            <a href="../../../notes.md"><code>notes.md → Quality Evaluation</code></a>.
-          </p>
-        </article>
       </main>
     </div>
   </body>

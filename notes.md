@@ -883,11 +883,22 @@ Three families, in order of importance:
    - histogram of `p_target(x)` (where does difficulty hide?)
    - KL(p ‖ q) per position if both distributions are available
 
-Scripts:
+Scripts (see `spectre/scripts/README.md` for the full reference):
+- `spectre/scripts/benchmark.sh` sweeps the spectre binary across `(seed × n_max)`
+  configs and writes one `results/spectre/<run-id>/` directory per run.
+  Default pair is Qwen2.5-1.5B drafting for Qwen2.5-3B (fast smoke). Override with
+  `TGT_MODEL=...gemma-4-26B-A4B... DFT_MODEL=...gemma-4-E2B... bash spectre/scripts/benchmark.sh`
+  for the realistic Gemma showcase.
 - `spectre/scripts/quality_eval.py` reads every `results/spectre/<run-id>/` directory
   and produces 7 PNGs into `spectre/presentation/png/quality-*.png`.
 - See also `spectre/presentation/quality_eval_slides.md` for the slide outline and
   `spectre/presentation/html/quality.html` for the live HTML view.
+
+Reproduce end-to-end:
+```bash
+bash spectre/scripts/benchmark.sh            # ~30-90s on a small GPU
+python3 spectre/scripts/quality_eval.py      # regenerate figures
+```
 
 ### Data convention
 
