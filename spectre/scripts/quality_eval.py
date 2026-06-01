@@ -67,6 +67,111 @@ SOURCE_COLORS = {
     "ar": PALETTE["tgt"],
 }
 
+# Fine-grained source colours: draft tokens split into model-drafted vs ngram-drafted
+# based on whether p_draft is NaN (ngram is a Dirac delta and writes NaN).
+SOURCE_COLORS_DETAILED = {
+    "ar":             "#a0aec0",  # neutral grey - target sampling, no speculation
+    "bonus":          PALETTE["accent"],
+    "draft (model)":  PALETTE["tgt"],
+    "draft (ngram)":  PALETTE["ok"],
+}
+
+# One colour per run mode for headline plots
+MODE_COLORS = {
+    "ar":           "#a0aec0",
+    "spec-model":   PALETTE["tgt"],
+    "spec-hybrid":  PALETTE["ok"],
+}
+
+MODE_LABEL = {
+    "ar":           "AR (no draft)",
+    "spec-model":   "SD (model draft only)",
+    "spec-hybrid":  "SD (n-gram + model hybrid)",
+}
+
+
+def _is_ngram_run(run: "Run") -> bool:
+    return bool(run.meta.get("config", {}).get("ngram", False))
+
+
+def _classify_mode(run: "Run") -> str:
+    if not run.is_speculative:
+        return "ar"
+    return "spec-hybrid" if _is_ngram_run(run) else "spec-model"
+
+
+def _hybrid_source_stats(run: "Run") -> Optional[dict]:
+    """Decompose a hybrid run's rounds by drafter source.
+
+    A round is "n-gram served" iff every drafted token in that round has NaN p_draft
+    (n-gram returns a Dirac, main.cpp writes NaN; the model fallback writes a real
+    p_draft via softmax). Returns per-source slot and round counts plus derived
+    per-slot acceptance rates. Returns None for non-hybrid or empty runs.
+    """
+    if not _is_ngram_run(run) or not run.rounds:
+        return None
+    tokens = run.tokens
+    if len(tokens.get("call", np.empty(0))) == 0:
+        return None
+
+    call_arr = tokens["call"]
+    source_arr = tokens["source"]
+    pdraft_arr = tokens["p_draft"]
+
+    ngram_calls: set[int] = set()
+    model_calls: set[int] = set()
+    for call_idx in range(len(run.rounds)):
+        mask = (call_arr == call_idx) & (source_arr == "draft")
+        if not mask.any():
+            continue
+        pd_slice = pdraft_arr[mask]
+        if np.all(np.isnan(pd_slice)):
+            ngram_calls.add(call_idx)
+        else:
+            model_calls.add(call_idx)
+
+    def agg(call_set: set[int]) -> tuple[int, int]:
+        n_drafted = sum(int(rd["n_drafted"]) for i, rd in enumerate(run.rounds) if i in call_set)
+        n_accepted = sum(int(rd["n_drafted"]) if int(rd["rejected_pos"]) < 0 else int(rd["rejected_pos"])
+                          for i, rd in enumerate(run.rounds) if i in call_set)
+        return n_drafted, n_accepted
+
+    d_n, a_n = agg(ngram_calls)
+    d_m, a_m = agg(model_calls)
+
+    return {
+        "n_rounds_ngram":     len(ngram_calls),
+        "n_rounds_model":     len(model_calls),
+        "n_drafted_ngram":    d_n,
+        "n_accepted_ngram":   a_n,
+        "n_drafted_model":    d_m,
+        "n_accepted_model":   a_m,
+        "accept_rate_ngram":  (a_n / d_n) if d_n > 0 else float("nan"),
+        "accept_rate_model":  (a_m / d_m) if d_m > 0 else float("nan"),
+    }
+
+
+def _token_source_buckets(run: "Run") -> dict[str, int]:
+    """Bucket each generated token into one of four fine-grained sources.
+
+    ngram-drafted tokens carry NaN in p_draft (n-gram is a Dirac, no distribution).
+    Model-drafted tokens carry a real p_draft. We use that to split the 'draft' source.
+    """
+    src = run.tokens.get("source", np.empty(0))
+    pd = run.tokens.get("p_draft", np.empty(0))
+    counts = {"ar": 0, "bonus": 0, "draft (model)": 0, "draft (ngram)": 0}
+    for s, p in zip(src, pd):
+        if s == "ar":
+            counts["ar"] += 1
+        elif s == "bonus":
+            counts["bonus"] += 1
+        elif s == "draft":
+            if np.isnan(p):
+                counts["draft (ngram)"] += 1
+            else:
+                counts["draft (model)"] += 1
+    return counts
+
 REPO = Path(__file__).resolve().parents[2]
 RESULTS_DIR_DEFAULT = REPO / "results" / "spectre"
 OUT_DIR_DEFAULT = REPO / "spectre" / "presentation" / "png"
@@ -484,6 +589,288 @@ def fig_rounds_histogram(ref: Run, out: Path) -> None:
     plt.close(fig)
 
 
+# ------------------------------------------------------------------ accessible figures
+#
+# These three plots tell the thesis story in plain English. They don't replace
+# the seven analytical figures above - they sit alongside them as the headline.
+
+
+def fig_speedup_bars(runs: list[Run], baseline: Optional[Run], out: Path) -> None:
+    """Headline plot: tokens-per-second per run, annotated as multiples of AR.
+
+    Bars are colour-coded by mode (AR / SD-model / SD-hybrid). Each bar is
+    annotated with its absolute tok/s AND its speedup vs the AR baseline.
+    """
+    if baseline is None or baseline.tok_per_s <= 0:
+        return
+
+    base_tps = baseline.tok_per_s
+    # AR runs first, then model-only spec, then hybrid spec (so the eye moves left-to-right
+    # in "more interesting" order). Within a mode, sort by n_max if present, else by run_id.
+    def sort_key(r: Run):
+        mode = _classify_mode(r)
+        mode_rank = {"ar": 0, "spec-model": 1, "spec-hybrid": 2}[mode]
+        n_max = int(r.meta.get("config", {}).get("n_max", 0))
+        return (mode_rank, n_max, r.run_id)
+
+    sorted_runs = sorted(runs, key=sort_key)
+    if not sorted_runs:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(8.5, 1.4 * len(sorted_runs)), 5.6),
+                           constrained_layout=True)
+
+    x = np.arange(len(sorted_runs))
+    tps = np.array([r.tok_per_s for r in sorted_runs])
+    colors = [MODE_COLORS[_classify_mode(r)] for r in sorted_runs]
+
+    ax.bar(x, tps, color=colors, edgecolor=PALETTE["ink"], lw=0.7, alpha=0.92)
+
+    y_top = tps.max() * 1.22
+    for xi, r, t in zip(x, sorted_runs, tps):
+        speedup = t / base_tps
+        marker = "" if r is baseline else f"\n{speedup:.2f}× AR"
+        bar_label = f"{t:.1f} t/s{marker}"
+        ax.text(xi, t + y_top * 0.012, bar_label, ha="center", va="bottom",
+                fontsize=10, color=PALETTE["ink"], fontweight="bold")
+
+    ax.axhline(base_tps, color=PALETTE["bad"], ls="--", lw=1.1, alpha=0.7,
+               label=f"AR baseline ({base_tps:.1f} t/s)")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([r.run_id for r in sorted_runs], rotation=20, ha="right",
+                       fontsize=9)
+    ax.set_ylabel("Tokens generated per second")
+    ax.set_ylim(0, y_top)
+    ax.set_title("How fast is each configuration?",
+                 fontsize=14, color=PALETTE["ink"], fontweight="bold", pad=10)
+
+    legend_patches = [
+        plt.Rectangle((0, 0), 1, 1, fc=MODE_COLORS[m], ec=PALETTE["ink"], lw=0.5,
+                      label=MODE_LABEL[m])
+        for m in ("ar", "spec-model", "spec-hybrid")
+        if any(_classify_mode(r) == m for r in sorted_runs)
+    ]
+    # Add the baseline line to the legend
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles=legend_patches + handles, loc="upper left",
+              frameon=False, fontsize=10)
+
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def fig_token_sources(runs: list[Run], out: Path) -> None:
+    """Stacked horizontal bars: what fraction of each run's output came from
+    {target's own sample, draft model, n-gram drafter, bonus}.
+
+    Reading this: a tall green slice means the n-gram drafter was contributing.
+    The blue slice is the draft model's contribution. The grey/purple slices are
+    target-only fallback paths.
+    """
+    sorted_runs = sorted(
+        runs,
+        key=lambda r: ({"ar": 0, "spec-model": 1, "spec-hybrid": 2}[_classify_mode(r)],
+                       int(r.meta.get("config", {}).get("n_max", 0)),
+                       r.run_id),
+    )
+    if not sorted_runs:
+        return
+
+    sources = ["ar", "draft (model)", "draft (ngram)", "bonus"]
+
+    fig, ax = plt.subplots(figsize=(10.5, max(3.5, 0.8 * len(sorted_runs))),
+                           constrained_layout=True)
+
+    y = np.arange(len(sorted_runs))
+    cum = np.zeros(len(sorted_runs), dtype=float)
+    plotted_any = False
+
+    for s in sources:
+        widths = []
+        for r in sorted_runs:
+            counts = _token_source_buckets(r)
+            total = sum(counts.values()) or 1
+            widths.append(counts[s] / total * 100.0)
+        widths = np.array(widths)
+        if widths.sum() == 0:
+            continue
+        plotted_any = True
+        ax.barh(y, widths, left=cum, color=SOURCE_COLORS_DETAILED[s],
+                edgecolor="white", lw=0.6, label=s, alpha=0.95)
+        for yi, w, c in zip(y, widths, cum):
+            if w >= 6:
+                ax.text(c + w / 2, yi, f"{w:.0f}%", ha="center", va="center",
+                        fontsize=9, color="white", fontweight="bold")
+        cum += widths
+
+    if not plotted_any:
+        plt.close(fig)
+        return
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([r.run_id for r in sorted_runs], fontsize=9)
+    ax.set_xlabel("Share of generated tokens  (%)")
+    ax.set_xlim(0, 100)
+    ax.invert_yaxis()
+    ax.set_title("Where do the generated tokens come from?",
+                 fontsize=14, color=PALETTE["ink"], fontweight="bold", pad=10)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=4,
+              frameon=False, fontsize=10)
+
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def fig_round_profile(runs: list[Run], out: Path) -> None:
+    """One small panel per speculative run: how many of the K drafted tokens
+    were accepted in each speculative round.
+
+    A spike at 0 means rounds where the very first draft token was rejected
+    (frequent on novel content). A spike at K means rounds where the entire
+    draft was accepted (the bonus-sample case). Hybrid runs typically show
+    a bimodal pattern: lots of zeros (n-gram missed, fallback was lucky) plus
+    a long right tail (n-gram hit and most tokens accepted).
+    """
+    spec_runs = [r for r in runs if r.is_speculative and r.rounds]
+    if not spec_runs:
+        return
+
+    max_k = max(int(rd["n_drafted"]) for r in spec_runs for rd in r.rounds)
+    if max_k <= 0:
+        return
+    bins = np.arange(0, max_k + 2) - 0.5
+
+    n = len(spec_runs)
+    cols = min(2, n)
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5.2 * cols, 3.6 * rows),
+                              constrained_layout=True, sharey=True,
+                              squeeze=False)
+
+    for ax, r in zip(axes.flat, spec_runs):
+        accepted = np.array([
+            int(rd["n_drafted"]) if int(rd["rejected_pos"]) < 0 else int(rd["rejected_pos"])
+            for rd in r.rounds
+        ])
+        if len(accepted) == 0:
+            ax.set_visible(False)
+            continue
+        mode = _classify_mode(r)
+        color = MODE_COLORS[mode]
+        ax.hist(accepted, bins=bins, color=color, alpha=0.9,
+                edgecolor="white", lw=0.5)
+        mean_acc = float(np.mean(accepted))
+        ax.axvline(mean_acc, color=PALETTE["bad"], lw=1.3, ls="--", alpha=0.75,
+                   label=f"mean = {mean_acc:.2f}")
+        ax.set_title(
+            f"{r.run_id}\n{MODE_LABEL[mode]}  ·  {len(accepted)} rounds",
+            fontsize=10,
+        )
+        ax.set_xticks(np.arange(0, max_k + 1))
+        ax.set_xlim(-0.6, max_k + 0.6)
+        ax.set_xlabel("draft tokens accepted in the round")
+        ax.set_ylabel("number of rounds")
+        ax.legend(frameon=False, fontsize=9, loc="upper right")
+
+    for ax in axes.flat[len(spec_runs):]:
+        ax.set_visible(False)
+
+    fig.suptitle("How productive is each speculative round?",
+                 fontsize=14, color=PALETTE["ink"], fontweight="bold")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def fig_hybrid_anatomy(runs: list[Run], out: Path) -> None:
+    """Per-source breakdown of hybrid runs.
+
+    Left: per-slot acceptance probability for n-gram-drafted vs model-drafted slots
+          (the counterintuitive result: n-gram has LOWER per-slot acceptance).
+    Right: round mix - what fraction of rounds were n-gram-served vs fell back to the
+           model. Together they explain why hybrid wins despite the lower per-slot
+           acceptance: when n-gram fires, the round is essentially free.
+    """
+    hybrid = [r for r in runs if _is_ngram_run(r) and r.is_speculative]
+    if not hybrid:
+        return
+    stats = [(r, _hybrid_source_stats(r)) for r in hybrid]
+    stats = [(r, s) for r, s in stats if s is not None]
+    if not stats:
+        return
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.5, 5.2), constrained_layout=True)
+
+    x = np.arange(len(stats))
+    width = 0.36
+
+    acc_ngram = [s["accept_rate_ngram"] for _, s in stats]
+    acc_model = [s["accept_rate_model"] for _, s in stats]
+    n_drafted_ngram = [s["n_drafted_ngram"] for _, s in stats]
+    n_drafted_model = [s["n_drafted_model"] for _, s in stats]
+
+    ax1.bar(x - width / 2, acc_ngram, width, color=MODE_COLORS["spec-hybrid"],
+            alpha=0.92, edgecolor=PALETTE["ink"], lw=0.6,
+            label="n-gram drafted slots")
+    ax1.bar(x + width / 2, acc_model, width, color=MODE_COLORS["spec-model"],
+            alpha=0.92, edgecolor=PALETTE["ink"], lw=0.6,
+            label="model drafted slots")
+
+    for i, (a_n, a_m, dn, dm) in enumerate(zip(acc_ngram, acc_model,
+                                                n_drafted_ngram, n_drafted_model)):
+        if not math.isnan(a_n):
+            ax1.text(i - width / 2, a_n + 0.02, f"{a_n:.2f}\nn={dn}", ha="center",
+                     va="bottom", fontsize=8.5, color=PALETTE["ink"])
+        if not math.isnan(a_m):
+            ax1.text(i + width / 2, a_m + 0.02, f"{a_m:.2f}\nn={dm}", ha="center",
+                     va="bottom", fontsize=8.5, color=PALETTE["ink"])
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([r.run_id for r, _ in stats], rotation=15, ha="right",
+                        fontsize=9)
+    ax1.set_ylabel("P(target accepts proposed token)")
+    finite_rates = [v for v in (*acc_ngram, *acc_model) if not math.isnan(v)]
+    y_top = max(finite_rates) * 1.30 if finite_rates else 1.0
+    ax1.set_ylim(0, max(y_top, 0.1))
+    ax1.set_title("Per-slot acceptance - who agrees with the target?",
+                  fontsize=11.5, color=PALETTE["ink"], fontweight="bold")
+    ax1.legend(frameon=False, loc="upper left")
+
+    n_ngram = [s["n_rounds_ngram"] for _, s in stats]
+    n_model = [s["n_rounds_model"] for _, s in stats]
+    totals = [a + b for a, b in zip(n_ngram, n_model)]
+    pct_ngram = [a / max(t, 1) * 100 for a, t in zip(n_ngram, totals)]
+    pct_model = [b / max(t, 1) * 100 for b, t in zip(n_model, totals)]
+
+    ax2.bar(x, pct_ngram, color=MODE_COLORS["spec-hybrid"], alpha=0.92,
+            edgecolor=PALETTE["ink"], lw=0.6, label="n-gram fired")
+    ax2.bar(x, pct_model, bottom=pct_ngram, color=MODE_COLORS["spec-model"],
+            alpha=0.92, edgecolor=PALETTE["ink"], lw=0.6,
+            label="fell back to draft model")
+
+    for i, (pn, pm, nn, nm) in enumerate(zip(pct_ngram, pct_model, n_ngram, n_model)):
+        if pn >= 8:
+            ax2.text(i, pn / 2, f"{pn:.0f}%\n({nn} rounds)", ha="center", va="center",
+                     color="white", fontsize=9, fontweight="bold")
+        if pm >= 8:
+            ax2.text(i, pn + pm / 2, f"{pm:.0f}%\n({nm} rounds)", ha="center",
+                     va="center", color="white", fontsize=9, fontweight="bold")
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([r.run_id for r, _ in stats], rotation=15, ha="right",
+                        fontsize=9)
+    ax2.set_ylabel("Share of total rounds  (%)")
+    ax2.set_ylim(0, 110)
+    ax2.set_title("Round mix - how often does n-gram actually fire?",
+                  fontsize=11.5, color=PALETTE["ink"], fontweight="bold")
+    ax2.legend(frameon=False, loc="upper right")
+
+    fig.suptitle("Why hybrid wins despite lower per-slot acceptance",
+                 fontsize=13.5, color=PALETTE["ink"], fontweight="bold")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ main
 
 
@@ -523,13 +910,20 @@ def main() -> None:
     print(f"baseline AR run:                {base.run_id if base else None}")
 
     plots = [
-        ("quality-ppl-trace.png",            lambda p: fig_ppl_trace(ref, base, p)),
-        ("quality-target-prob-hist.png",     lambda p: fig_prob_hist(ref, p)),
-        ("quality-acceptance-by-run.png",    lambda p: fig_acceptance_bar(runs, p)),
-        ("quality-speed-vs-accept.png",      lambda p: fig_speed_vs_accept(runs, base, p)),
+        # headline figures (plain English, thesis-grade)
+        ("quality-speedup.png",                lambda p: fig_speedup_bars(runs, base, p)),
+        ("quality-token-sources.png",          lambda p: fig_token_sources(runs, p)),
+        ("quality-rounds-profile.png",         lambda p: fig_round_profile(runs, p)),
+        ("quality-hybrid-anatomy.png",         lambda p: fig_hybrid_anatomy(runs, p)),
+        # analytical figures (kept; #3 acceptance-bar and #7 rounds-histogram dropped
+        # as redundant with the headline figures above)
+        ("quality-ppl-trace.png",              lambda p: fig_ppl_trace(ref, base, p)),
+        ("quality-target-prob-hist.png",       lambda p: fig_prob_hist(ref, p)),
+        ("quality-speed-vs-accept.png",        lambda p: fig_speed_vs_accept(runs, base, p)),
         ("quality-per-position-empirical.png", lambda p: fig_per_position_empirical(runs, p)),
-        ("quality-draft-vs-target-prob.png", lambda p: fig_draft_vs_target_prob(ref, p)),
-        ("quality-rounds-histogram.png",     lambda p: fig_rounds_histogram(ref, p)),
+        # appendix-tier figure (degenerate for n-gram runs; kept for the
+        # model-only / TV-distance discussion)
+        ("quality-draft-vs-target-prob.png",   lambda p: fig_draft_vs_target_prob(ref, p)),
     ]
     for name, fn in plots:
         target = args.out / name

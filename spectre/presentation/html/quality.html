@@ -34,13 +34,15 @@
         <h1>Quality results</h1>
         <nav>
           <a href="#summary">Headline numbers</a>
+          <a href="#speedup">A. Speedup per configuration</a>
+          <a href="#sources">B. Token source breakdown</a>
+          <a href="#round-profile">C. Per-round productivity</a>
+          <a href="#hybrid-anatomy">D. Hybrid drafter anatomy</a>
           <a href="#losslessness">1. Losslessness check</a>
           <a href="#difficulty">2. Where difficulty hides</a>
-          <a href="#acceptance">3. Acceptance per speculator</a>
-          <a href="#frontier">4. Speed-acceptance frontier</a>
-          <a href="#per-position">5. Per-position decay</a>
-          <a href="#draft-vs-target">6. p_draft vs p_target</a>
-          <a href="#rounds">7. Accepted-per-call</a>
+          <a href="#frontier">3. Speed-acceptance frontier</a>
+          <a href="#per-position">4. Per-position decay</a>
+          <a href="#draft-vs-target">Appendix: p_draft vs p_target</a>
         </nav>
         <p class="note" style="margin-top: 1rem">
           See also <a href="atlas.html">Atlas</a>,
@@ -59,6 +61,99 @@
             once you collect fresh runs with the spectre binary. See
             <code>spectre/presentation/README.md</code> for the exact commands.
           </p>
+        </article>
+
+        <article id="speedup">
+          <h2>A. How fast is each configuration?</h2>
+          <p class="lead">
+            Tokens-per-second per run, bars colour-coded by mode
+            (AR / SD with model-only drafter / SD with the n-gram + model hybrid).
+            Each bar is annotated with its absolute throughput and its multiplier
+            over the autoregressive baseline (dashed line). Bars above the dashed
+            line are net wins.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-speedup.png" alt="Tokens-per-second per configuration, annotated with speedup over the AR baseline" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure A.</strong> The headline plot. Speculative decoding only
+              wins when the per-round overhead is cheaper than the equivalent number
+              of autoregressive steps - which depends on draft/target ratio, draft
+              quantisation, and prompt repetitiveness. The hybrid drafter
+              (n-gram first, model fallback) often pulls ahead by skipping the draft
+              model's forward pass on rounds where pattern matching against the
+              history already gives a viable continuation.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="sources">
+          <h2>B. Where do the generated tokens come from?</h2>
+          <p class="lead">
+            Stacked breakdown of generated tokens per run, split across four sources:
+            <code>ar</code> (target sampled in autoregressive mode),
+            <code>draft (model)</code> (target accepted a token proposed by the draft
+            model), <code>draft (n-gram)</code> (target accepted a token proposed by
+            pattern matching against the history - detected post-hoc by
+            <code>p_draft = NaN</code> in <code>tokens.csv</code>), and
+            <code>bonus</code> (target's free sample at the end of a fully-accepted draft).
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-token-sources.png" alt="Stacked horizontal bars showing the per-run breakdown of token sources" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure B.</strong> Makes the hybrid mechanism visually concrete.
+              The green wedge is direct evidence of the n-gram drafter contributing -
+              its size tracks how repetitive the generated content is. On
+              free-form prose it's small; on code or boilerplate it dominates.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="round-profile">
+          <h2>C. How productive is each speculative round?</h2>
+          <p class="lead">
+            One panel per speculative run, each a histogram of accepted draft tokens
+            per round. Spike at 0 = round where the first draft token was rejected
+            (and the target's resampled bonus is all you got). Spike at <em>k</em> =
+            round where every drafted token was accepted (plus a target bonus). The
+            mean line is the per-round average accepted count - directly proportional
+            to wall-clock throughput when the round cost is constant.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-rounds-profile.png" alt="Histograms of accepted draft tokens per round, one panel per speculative run" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure C.</strong> The shape that's diagnostic of hybrid
+              drafting: bimodal with a tall spike at 0 (n-gram missed; fallback got
+              unlucky on the first slot) <em>and</em> a long right tail (n-gram hit
+              and most of the m-gram was accepted). Model-only runs produce a
+              smoother, more centred distribution.
+            </figcaption>
+          </figure>
+        </article>
+
+        <article id="hybrid-anatomy">
+          <h2>D. Why hybrid wins despite lower per-slot acceptance</h2>
+          <p class="lead">
+            Two panels, restricted to hybrid runs. <strong>Left:</strong> per-slot
+            acceptance probability split by drafter source - <code>P(target accepts | n-gram drafted)</code>
+            vs. <code>P(target accepts | model drafted)</code>. The n-gram is a Dirac
+            (<code>q = 1</code>), so by <code>E[α] = 1 − TV(p, q)</code> its acceptance
+            ceiling collapses whenever the target spreads probability across multiple
+            continuations. <strong>Right:</strong> the round mix - what fraction of all
+            speculative rounds were served by the n-gram fast path vs. fell back to
+            the draft model.
+          </p>
+          <figure class="diagram">
+            <img src="png/quality-hybrid-anatomy.png" alt="Per-source breakdown for hybrid runs: per-slot acceptance and round mix" onerror="this.closest('article').style.display='none'" />
+            <figcaption>
+              <strong>Figure D.</strong> Closes the loop on figures A-C. The n-gram
+              path has <em>lower</em> per-slot acceptance than the model path (left),
+              yet hybrid still wins because (i) when n-gram fires it costs roughly
+              one target forward pass for the whole round - the draft model is
+              skipped entirely - and (ii) it fires on a non-trivial share of rounds
+              (right). The product of "cheap" and "often" is what beats "expensive
+              but accurate".
+            </figcaption>
+          </figure>
         </article>
 
         <article id="losslessness">
@@ -97,25 +192,8 @@
           </figure>
         </article>
 
-        <article id="acceptance">
-          <h2>3. Mean acceptance rate per speculator</h2>
-          <p class="lead">
-            From <code>logs/benchmark-logs/*.log</code>. Three runs per configuration.
-            Note the gap between the single <code>ngram_cache</code> (0.355) and the chain
-            (0.201) - chain pays a per-round overhead for running 5 speculators.
-          </p>
-          <figure class="diagram">
-            <img src="png/quality-acceptance-by-run.png" alt="Mean draft acceptance rate per run" onerror="this.closest('article').style.display='none'" />
-            <figcaption>
-              <strong>Figure 3.</strong> <code>ngram_simple</code> and the smart-pick chain
-              collapse to nearly zero acceptance - they fail to match the boilerplate
-              patterns that <code>ngram_cache</code> picks up on.
-            </figcaption>
-          </figure>
-        </article>
-
         <article id="frontier">
-          <h2>4. Efficiency frontier - speed vs. acceptance</h2>
+          <h2>3. Efficiency frontier - speed vs. acceptance</h2>
           <p class="lead">
             The most counterintuitive result. Speculation is <strong>not free</strong>:
             below an empirical break-even of ≈ 0.10 acceptance, draft overhead exceeds
@@ -124,7 +202,7 @@
           <figure class="diagram">
             <img src="png/quality-speed-vs-accept.png" alt="Decode throughput vs. acceptance rate" onerror="this.closest('article').style.display='none'" />
             <figcaption>
-              <strong>Figure 4.</strong> Dashed line = baseline. <code>ngram_simple</code>
+              <strong>Figure 3.</strong> Dashed line = baseline. <code>ngram_simple</code>
               and chain (smart pick) sit below it - negative speedup. <code>ngram_cache</code>
               and chain (all 5) clear the threshold.
             </figcaption>
@@ -132,7 +210,7 @@
         </article>
 
         <article id="per-position">
-          <h2>5. Per-position acceptance - why long drafts saturate</h2>
+          <h2>4. Per-position acceptance - why long drafts saturate</h2>
           <p class="lead">
             Under an independent-Bernoulli model, the i-th drafted token is accepted with
             probability <code>p̂ⁱ</code>. <code>p̂</code> is fitted from each speculator's
@@ -142,7 +220,7 @@
           <figure class="diagram">
             <img src="png/quality-per-position-empirical.png" alt="Empirical per-position acceptance and expected accepted vs. draft length" onerror="this.closest('article').style.display='none'" />
             <figcaption>
-              <strong>Figure 5.</strong> Direct motivation for adaptive draft length
+              <strong>Figure 4.</strong> Direct motivation for adaptive draft length
               (AdaEDL, SpecDec++): static k is always a compromise; per-token confidence
               gating wins. Fitted <code>p̂</code>: ngram_cache 0.63, chain (all 5) 0.46,
               ngram_simple / smart pick 0.14.
@@ -151,40 +229,23 @@
         </article>
 
         <article id="draft-vs-target">
-          <h2>6. p_draft vs. p_target on accepted tokens</h2>
+          <h2>Appendix: p_draft vs. p_target on accepted tokens</h2>
           <p class="lead">
-            Per-accepted-token scatter: target probability on the x-axis, draft probability
-            on the y-axis. The closer to the diagonal, the more <code>q</code> agrees with
-            <code>p</code> - and by <code>E[α] = 1 − TV(p, q)</code>, that's exactly what
-            sets the acceptance ceiling.
+            Kept for the model-only / TV-distance discussion. Per-accepted-token scatter:
+            target probability on the x-axis, draft probability on the y-axis. The closer
+            to the diagonal, the more <code>q</code> agrees with <code>p</code> - and by
+            <code>E[α] = 1 − TV(p, q)</code>, that is exactly what sets the acceptance
+            ceiling. Degenerate for the hybrid runs (n-gram emits a Dirac with no
+            <code>p_draft</code>), which is why it lives in the appendix; figure D covers
+            the hybrid case directly.
           </p>
           <figure class="diagram">
             <img src="png/quality-draft-vs-target-prob.png" alt="p_draft vs p_target scatter on accepted tokens" onerror="this.closest('article').style.display='none'" />
             <figcaption>
-              <strong>Figure 6.</strong> Points above the diagonal are draft over-confidence
-              (acceptance still possible but the residual probability that mass goes
-              elsewhere); points below are draft under-confidence (always accepted by the
-              <code>min(1, p/q)</code> rule). For n-gram speculators, <code>p_draft</code>
-              is omitted (the speculator returns a single token id, not a distribution).
-            </figcaption>
-          </figure>
-        </article>
-
-        <article id="rounds">
-          <h2>7. Distribution of accepted-per-call</h2>
-          <p class="lead">
-            How many of the <code>k</code> drafted tokens does each round actually keep?
-            Under the independent-Bernoulli model with parameter <code>p̂</code>, this
-            follows a truncated geometric distribution. Heavy mass at <code>0</code> means
-            the speculator wasted its draft.
-          </p>
-          <figure class="diagram">
-            <img src="png/quality-rounds-histogram.png" alt="Histogram of accepted tokens per speculative call with geometric overlay" onerror="this.closest('article').style.display='none'" />
-            <figcaption>
-              <strong>Figure 7.</strong> The empirical histogram overlaid with the geometric
-              model from Figure 5's fitted <code>p̂</code>. Deviations indicate where the
-              independent-Bernoulli assumption breaks down (typically: correlated rejections
-              clustered around hard tokens).
+              <strong>Appendix figure.</strong> Points above the diagonal are draft
+              over-confidence (acceptance still possible but the residual probability
+              mass goes elsewhere); points below are draft under-confidence (always
+              accepted by the <code>min(1, p/q)</code> rule).
             </figcaption>
           </figure>
         </article>
