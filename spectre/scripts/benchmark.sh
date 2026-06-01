@@ -2,7 +2,7 @@
 #
 # spectre/scripts/benchmark.sh
 #
-# Sweep the spectre binary over (mode × draft length × seed) and produce one
+# Sweep the spectre binary over (mode × draft length × seed × ngram) and produce one
 # self-contained run directory per invocation under $RESULTS_DIR.
 #
 # Each run directory contains:
@@ -36,6 +36,9 @@
 #   # AR baseline only on a standalone model:
 #   TGT_MODEL=~/models/Qwen3.5-9B-Q8_0.gguf N_MAX_VALUES="" \
 #     ./spectre/scripts/benchmark.sh
+#
+#   # disable the hybrid (model + ngram) runs and keep only model-only spec:
+#   NGRAM=0 ./spectre/scripts/benchmark.sh
 #
 # Notes on picking a pair
 # -----------------------
@@ -72,6 +75,7 @@ TOP_K="${TOP_K:-40}"
 
 SEEDS="${SEEDS:-42}"              # add more for error bars: SEEDS="42 43 44"
 N_MAX_VALUES="${N_MAX_VALUES:-4 8}"   # speculative draft lengths to sweep; empty = AR only
+NGRAM="${NGRAM:-1}"               # 1 = also run hybrid (model + ngram) variant per n_max; 0 = model only
 RESULTS_DIR="${RESULTS_DIR:-results/spectre}"
 TIMEOUT="${TIMEOUT:-300}"         # seconds per run; 0 disables
 FORCE="${FORCE:-0}"               # 1 = re-run even if meta.json says complete
@@ -102,12 +106,15 @@ mkdir -p "$RESULTS_DIR"
 
 # -------------------------------------------------------------------- enumerate runs
 
-# Each entry encodes: "<run-id>|<draft-model-or-empty>|<n-max>|<seed>"
+# Each entry encodes: "<run-id>|<draft-model-or-empty>|<n-max>|<seed>|<ngram>"
 runs=()
 for seed in $SEEDS; do
-  runs+=( "ar-baseline_seed${seed}||0|${seed}" )
+  runs+=( "ar-baseline_seed${seed}||0|${seed}|0" )
   for k in $N_MAX_VALUES; do
-    runs+=( "spec-nmax${k}_seed${seed}|${DFT_MODEL}|${k}|${seed}" )
+    runs+=( "spec-nmax${k}_seed${seed}|${DFT_MODEL}|${k}|${seed}|0" )
+    if [[ "$NGRAM" == "1" ]]; then
+      runs+=( "spec-nmax${k}-ngram_seed${seed}|${DFT_MODEL}|${k}|${seed}|1" )
+    fi
   done
 done
 
@@ -128,6 +135,7 @@ echo "  n_predict:     $N_PREDICT     ctx: $CTX     ngl: $NGL"
 echo "  sampler:       temp=$TEMP top_p=$TOP_P top_k=$TOP_K"
 echo "  seeds:         $SEEDS"
 echo "  n_max sweep:   ${N_MAX_VALUES:-<none>}"
+echo "  ngram hybrid:  $([[ "$NGRAM" == "1" ]] && echo "yes (+1 run per n_max)" || echo "no")"
 echo "  results dir:   $RESULTS_DIR"
 echo "  timeout/run:   ${TIMEOUT}s     force re-run: $FORCE"
 echo "  total runs:    $total"
@@ -143,7 +151,7 @@ n_fail=0
 idx=0
 for entry in "${runs[@]}"; do
   idx=$((idx + 1))
-  IFS='|' read -r run_id dft nmax seed <<< "$entry"
+  IFS='|' read -r run_id dft nmax seed ngram <<< "$entry"
   out_dir="$RESULTS_DIR/$run_id"
   log_file="$RESULTS_DIR/$run_id.log"
 
@@ -177,6 +185,9 @@ except Exception:
   )
   if [[ -n "$dft" ]]; then
     args+=( --draft-model "$dft" --n-max "$nmax" )
+  fi
+  if [[ "$ngram" == "1" ]]; then
+    args+=( --ngram )
   fi
 
   printf "[%2d/%d] %-32s running... " "$idx" "$total" "$run_id"
