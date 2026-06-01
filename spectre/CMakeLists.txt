@@ -29,6 +29,9 @@ target_include_directories(main PRIVATE ${LLAMA_DIR}/include
 target_link_directories(main PRIVATE "${LLAMA_DIR}/build/bin")
 target_link_libraries(main PRIVATE PkgConfig::LLAMA)
 
+target_link_options(main PRIVATE
+  "-Wl,-rpath-link,${LLAMA_DIR}/build/bin")
+
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 if(ENABLE_ASAN)
   target_compile_options(main PRIVATE -fsanitize=address,leak
