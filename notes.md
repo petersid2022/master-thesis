@@ -1023,6 +1023,47 @@ Figures produced by `spectre/scripts/quality_eval.py` (run after collecting fres
 | `quality-draft-vs-target-prob.png` | `p_target` vs `p_draft` scatter on accepted tokens |
 | `quality-rounds-histogram.png` | distribution of accepted-per-call vs. geometric model |
 
+
+### n-gram Language Models
+
+The intuition of the n-gram model is that instead of computing the probability of a
+word given its entire history, we can approximate the history by just the last few
+words
+
+The bigram model, for example, approximates the probability of a word given
+all the previous words P(w_n|w_1:n−1) by using only the conditional probability given
+the preceding word P(w_n|w_n−1)
+
+The assumption that the probability of a word depends only on the previous word is
+called a Markov assumption. Markov models are the class of probabilistic models
+that assume we can predict the probability of some future unit without looking too
+far into the past
+
+n-gram --> looks n−1 words into the past
+
+Sampling from a distribution means to choose random points
+according to their likelihood. Thus sampling from a language model—which rep
+resents a distribution over sentences—means to generate some sentences, choosing
+each sentence according to its likelihood as defined by the model.
+
+• Language models offer a way to assign a probability to a sentence or other
+  sequence of words or tokens, and to predict a word or token from preceding
+  words or tokens.
+• N-grams are perhaps the simplest kind of language model. They are Markov
+  models that estimate words from a fixed window of previous words. N-gram
+  models can be trained by counting in a training corpus and normalizing the
+  counts (the maximum likelihood estimate).
+• N-gram language models can be evaluated on a test set using perplexity.
+• The perplexity of a test set according to a language model is a function of
+  the probability of the test set: the inverse test set probability according to the
+  model, normalized by the length.
+• Sampling from a language model means to generate some sentences, choos
+  ing each sentence according to its likelihood as defined by the model.
+• Smoothing algorithms provide a way to estimate probabilities for events that
+  were unseen in training. Commonly used smoothing algorithms for n-grams
+  include add-1 smoothing, or rely on lower-order n-gram counts through inter
+  polation
+
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
 2. <span id="resources-llama-cpp-docs-speculative-md"></span> [llama.cpp: docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md)
