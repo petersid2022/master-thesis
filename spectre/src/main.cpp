@@ -59,7 +59,7 @@ struct Parameters // {{{
   float top_p = 0.90f;
   int32_t top_k = 40;
 
-  std::string prompt = "How old is the universe?";
+  std::string prompt = "Write a Python class called Record with 20 properties: id, name, email, phone, address, city, state, zip_code, country, age, salary, department, role, manager, status, created_at, updated_at, is_active, score, notes. For each property implement a getter and setter using exactly this pattern: def get_X(self): return self._X and def set_X(self, value): self._X = value";
 
   // speculative decoding parameters
   int64_t n_min = 0;     // minimum number of draft tokens to use for speculative decoding
