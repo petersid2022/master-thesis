@@ -891,8 +891,7 @@ Scripts (see `spectre/scripts/README.md` for the full reference):
   for the realistic Gemma showcase.
 - `spectre/scripts/quality_eval.py` reads every `results/spectre/<run-id>/` directory
   and produces 7 PNGs into `spectre/presentation/png/quality-*.png`.
-- See also `spectre/presentation/quality_eval_slides.md` for the slide outline and
-  `spectre/presentation/html/quality.html` for the live HTML view.
+- See `spectre/presentation/html/quality.html` for the live HTML view.
 
 Reproduce end-to-end:
 ```bash

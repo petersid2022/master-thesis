@@ -13,7 +13,6 @@ speculative sampling".
 | `mermaid/diagrams.md` | Raw Mermaid sources (paste into [Mermaid Live](https://mermaid.live), GitHub Markdown, or Obsidian) |
 | `excalidraw/pipeline-starter.excalidraw` | Hand-drawn slide starter scene |
 | `excalidraw/README.md` | Hand-drawn slide workflow |
-| `quality_eval_slides.md` | Slide outline with body text, figure refs, and speaker notes |
 | `png/quality-*.png` | Generated quality figures (produced by `quality_eval.py`) |
 
 ## View locally
@@ -25,7 +24,7 @@ python3 -m http.server 8765
 # visit http://127.0.0.1:8765/spectre/presentation/html/index.html
 ```
 
-The HTML files use relative paths like `../quality_eval_slides.md` and
+The HTML files use relative paths like `../../../notes.md` and
 `../../../results/spectre/` that resolve against the repo root.
 
 Mermaid diagrams render client-side from a CDN - **Print → Save as PDF** from the
