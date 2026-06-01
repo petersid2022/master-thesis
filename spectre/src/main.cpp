@@ -116,8 +116,6 @@ struct RoundSummary {
 
 class RunRecorder {
 public:
-  // Open output files under <results_dir>/<run_id>/ and snapshot config at start so
-  // that a partial meta.json exists even if the run is killed before finalize().
   RunRecorder(const std::string &results_dir, const std::string &run_id,
               const std::string &started_at_iso, const Parameters &p)
       : run_dir(std::filesystem::path(results_dir) / run_id),
@@ -132,20 +130,16 @@ public:
     }
     this->tokens << "step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob\n";
 
-    // Write an initial meta.json with "complete": false so partial runs are inspectable.
-    this->write_meta(/*complete=*/false, 0, 0, 0, 0, 0.0, 0.0);
+    this->write_metadata(/*complete=*/false, 0, 0, 0, 0, 0.0, 0.0);
   }
 
-  // step is auto-incremented; call is provided by the speculative loop (or step for AR).
-  // For source != "draft", pos_in_draft must be -1 and p_draft is left empty.
-  // Flushes every row so the file is durable even if the process is killed mid-run.
   void record_token(
       int call,
       const char *source,
       int pos_in_draft,
       int token_id,
       double p_target,
-      double p_draft, // pass NAN to leave empty
+      double p_draft,
       double logit,
       double logprob) {
     this->tokens << this->step << ',' << call << ',' << source << ','
@@ -162,7 +156,6 @@ public:
     this->rounds.push_back({n_drafted, n_accepted_drafts, rejected_pos});
   }
 
-  // Finalize: flush tokens, overwrite meta.json with complete:true plus totals.
   void finalize(
       int64_t n_decoded_tokens,
       int64_t n_drafted,
@@ -172,23 +165,18 @@ public:
       double decode_ms) {
     this->tokens.flush();
     this->tokens.close();
-    this->write_meta(/*complete=*/true, n_decoded_tokens, n_drafted,
-                     n_accepted_drafts, n_bonus_samples, prompt_ms, decode_ms);
+    this->write_metadata(/*complete=*/true, n_decoded_tokens, n_drafted,
+                         n_accepted_drafts, n_bonus_samples, prompt_ms, decode_ms);
   }
 
   const std::filesystem::path &dir() const { return this->run_dir; }
 
-  // ISO-8601 local timestamp suitable for the "started_at" field and run_id default.
   static std::string iso_timestamp(bool compact = false) {
     using clock = std::chrono::system_clock;
     auto now = clock::now();
     std::time_t t = clock::to_time_t(now);
     std::tm tm_local{};
-#if defined(_WIN32)
-    localtime_s(&tm_local, &t);
-#else
     localtime_r(&t, &tm_local);
-#endif
     std::ostringstream os;
     if (compact) {
       os << std::put_time(&tm_local, "%Y%m%d-%H%M%S");
@@ -199,18 +187,15 @@ public:
   }
 
 private:
-  // Atomically replace meta.json: write to a sibling tmp file then rename.
-  // Called once from the constructor (complete=false, zero totals) and again from
-  // finalize (complete=true, real totals). Robust to mid-run kills.
-  void write_meta(bool complete,
-                  int64_t n_decoded_tokens,
-                  int64_t n_drafted,
-                  int64_t n_accepted_drafts,
-                  int64_t n_bonus_samples,
-                  double prompt_ms,
-                  double decode_ms) {
-    const std::filesystem::path final_path = this->run_dir / "meta.json";
-    const std::filesystem::path tmp_path = this->run_dir / "meta.json.tmp";
+  void write_metadata(bool complete,
+                      int64_t n_decoded_tokens,
+                      int64_t n_drafted,
+                      int64_t n_accepted_drafts,
+                      int64_t n_bonus_samples,
+                      double prompt_ms,
+                      double decode_ms) {
+    const std::filesystem::path final_path = this->run_dir / "metadata.json";
+    const std::filesystem::path tmp_path = this->run_dir / "metadata.json.tmp";
 
     std::ofstream m(tmp_path);
     if (!m) {
@@ -401,8 +386,7 @@ private:
   void print_usage(char **argv) {
     const char *name = argv[0];
 
-    // Truncate the default prompt for display so a 350-char boilerplate doesn't
-    // dominate the help text.
+    // truncate the default prompt for display
     constexpr std::size_t PROMPT_PREVIEW_MAX = 60;
     std::string prompt_preview = this->params.prompt;
     if (prompt_preview.size() > PROMPT_PREVIEW_MAX) {
@@ -437,7 +421,7 @@ private:
     print(GGML_LOG_LEVEL_NONE, "Output / reproducibility:");
     print(GGML_LOG_LEVEL_NONE, "  --seed <n>               sampler seed (default: {})", this->params.seed);
     print(GGML_LOG_LEVEL_NONE, "  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
-    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
+    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{metadata.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
     print(GGML_LOG_LEVEL_NONE, "");
     print(GGML_LOG_LEVEL_NONE, "Misc:");
     print(GGML_LOG_LEVEL_NONE, "  -h, --help               print this message and exit");
@@ -580,8 +564,6 @@ private:
     }
   }
 
-  // Compute (logit, prob) for `token` from a logits row, using `vocab` for the row width.
-  // Defaults to the target vocab for backward-compatibility with existing call sites.
   std::tuple<double, double> softmax(
       const float *logits_row,
       const llama_token token,
@@ -975,12 +957,11 @@ private:
         this->params.n_drafted += (int64_t)draft.size();
         this->params.n_accept += (int64_t)accepted.size() - 1;
 
-        // Per-round summary: how many drafts matched before first rejection (or -1 if all accepted).
-        // accepted.size() == draft.size() + 1  iff every draft matched (the last entry is the bonus sample).
+        // per-round summary: how many drafts matched before first rejection (or -1 if all accepted).
+        // accepted.size() == draft.size() + 1  if every draft matched (the last entry is the bonus sample).
         // otherwise accepted.back() is the resampled token at the mismatch position.
         const int n_accepted_drafts_in_round = (int)accepted.size() - 1;
-        const int rejected_pos =
-            (accepted.size() == draft.size() + 1) ? -1 : n_accepted_drafts_in_round;
+        const int rejected_pos = (accepted.size() == draft.size() + 1) ? -1 : n_accepted_drafts_in_round;
         recorder.record_round((int)draft.size(), n_accepted_drafts_in_round, rejected_pos);
         if (rejected_pos == -1) {
           n_bonus_samples += 1;
@@ -1019,8 +1000,7 @@ private:
           }
 
           // hard cap on tokens (treated like EOS for the purposes of clean finalize)
-          if (this->params.n_predict > 0 &&
-              (int64_t)(tokens_decoded + 1) >= this->params.n_predict) {
+          if (this->params.n_predict > 0 && (int64_t)(tokens_decoded + 1) >= this->params.n_predict) {
             this->params.has_eos = true;
           }
 
@@ -1076,7 +1056,7 @@ private:
                         n_bonus_samples,
                         prompt_ms, decode_ms);
       print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
-            (recorder.dir() / "meta.json").string(),
+            (recorder.dir() / "metadata.json").string(),
             (recorder.dir() / "tokens.csv").string());
 
       llama_perf_sampler_print(this->sampler_tgt);
@@ -1149,7 +1129,7 @@ private:
                       /*n_bonus_samples=*/0,
                       prompt_ms, decode_ms);
     print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
-          (recorder.dir() / "meta.json").string(),
+          (recorder.dir() / "metadata.json").string(),
           (recorder.dir() / "tokens.csv").string());
 
     // __asm volatile("int3");
