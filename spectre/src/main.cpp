@@ -1325,6 +1325,22 @@ private:
   std::vector<llama_token> draft(void) {
     llama_memory_t mem_draft = llama_get_memory(this->ctx_draft);
 
+    const auto draft_kv_len = [&]() -> std::size_t {
+      const llama_pos pmax = llama_memory_seq_pos_max(mem_draft, 0);
+      return pmax < 0 ? 0 : (std::size_t)(pmax + 1);
+    };
+
+    // The draft-side token mirror (prompt_draft) must track KV exactly.
+    // If they drift (e.g. after an interrupted decode/reuse edge case), M-RoPE
+    // models will fail with X >= Y on the next decode. Force a clean resync.
+    if (draft_kv_len() != this->prompt_draft.size()) {
+      print(GGML_LOG_LEVEL_WARN,
+            "draft(): KV/token mirror drift detected (kv_len={}, prompt_draft={}) - resyncing draft state",
+            draft_kv_len(), this->prompt_draft.size());
+      llama_memory_clear(mem_draft, false);
+      this->prompt_draft.clear();
+    }
+
     int reuse_i = 0; // the index of the first token to be reused
     int reuse_n = 0; // how much tokens can we reuse
 
@@ -1400,13 +1416,15 @@ private:
     this->reset_batch(this->speculation_batch_draft);
 
     const int32_t draft_batch_cap = (int32_t)llama_n_batch(this->ctx_draft);
+    llama_pos next_pos = (llama_pos)draft_kv_len();
     for (std::size_t i = (std::size_t)i_start + (std::size_t)reuse_n; i < current_prompt.size(); ++i) {
       this->create_new_batch(
           this->speculation_batch_draft, draft_batch_cap,
           current_prompt[i],
-          (llama_pos)(i - (std::size_t)i_start), false);
+          next_pos, false);
       // update the draft prefix
       this->prompt_draft.push_back(current_prompt[i]);
+      next_pos += 1;
     }
 
     //
@@ -1426,11 +1444,12 @@ private:
       this->reset_batch(this->speculation_batch_draft);
     }
 
-    // position of last_token equals the draft prefix
+    // Position must come from KV, not prompt_draft.size(), to satisfy M-RoPE's X < Y.
+    const llama_pos last_token_pos = (llama_pos)draft_kv_len();
     this->create_new_batch(
         this->speculation_batch_draft, draft_batch_cap,
         this->last_token,
-        (llama_pos)this->prompt_draft.size(),
+        last_token_pos,
         true);
 
     // update the draft prefix with the last_token
@@ -1476,11 +1495,11 @@ private:
         break;
       }
 
-      // next position is always current prompt_draft.size()
+      const llama_pos draft_next_pos = (llama_pos)draft_kv_len();
       this->create_new_batch(
           this->speculation_batch_draft, draft_batch_cap,
           accepted_token,
-          (llama_pos)this->prompt_draft.size(),
+          draft_next_pos,
           true);
 
       // evaluate the batch (update KV cache and compute logits for the batch)
