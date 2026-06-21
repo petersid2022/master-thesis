@@ -1064,6 +1064,18 @@ each sentence according to its likelihood as defined by the model.
   include add-1 smoothing, or rely on lower-order n-gram counts through inter
   polation
 
+• Quantization Pareto (spectre/presentation/png/quant-pareto.png already exists). The point: inference is bandwidth-bound
+  on consumer hardware, so Q4_K/Q5_K is not a "compromise" — it's the optimal operating point. This reframes the
+  model-selection question (requirement a in the brief) from "which architecture" to "which (architecture, quantization)
+  point on the Pareto front."
+• The hybrid-cache framing: speculative decoding is speculative execution; n-gram lookup is branch prediction with a small
+  BTB; the draft model is an L2 cache. Your thesis brief and intro already pitch this — lean into it, because the advisor
+  cannot push back on a framing they don't know.
+
+on memory-bandwidth-bound consumer hardware, a tiered drafter (n-gram → small model → target verification) recovers most of GPU speculative decoding's speedup while keeping the lossless guarantee. I measure latency, acceptance rate, and energy across (model pair × quantization × draft strategy), and I report a Pareto frontier instead of a single number
+
+Multiple choice / reasoning benchmarks for SD" — those are evaluations of the target model, not of SD
+
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
 2. <span id="resources-llama-cpp-docs-speculative-md"></span> [llama.cpp: docs/speculative.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md)
