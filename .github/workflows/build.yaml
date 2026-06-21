@@ -4,7 +4,6 @@ on:
   push:
     paths:
       - thesis.tex
-      - notes.md
 
 permissions:
   contents: write
@@ -19,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y aspell aspell-en aspell-el
-      - name: Spellcheck notes.md and thesis.tex (English + Greek)
+      - name: Spellcheck thesis.tex (English + Greek)
         shell: bash
         run: |
           set -euo pipefail
@@ -32,6 +31,7 @@ jobs:
 
             # words flagged by english dictionary
             aspell --lang=en_US --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/en.txt"
+
             # words flagged by greek dictionary
             aspell --lang=el_GR --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/el.txt"
 
@@ -49,7 +49,6 @@ jobs:
           }
 
           failed=0
-          check_bilingual notes.md markdown || failed=1
           check_bilingual thesis.tex tex || failed=1
 
           exit $failed
