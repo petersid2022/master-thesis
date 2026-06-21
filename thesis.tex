@@ -7,21 +7,31 @@
 
 \documentclass[a4paper,12pt]{report}
 
-% --- Language and Times-style fonts (LuaLaTeX + fontspec) --------------------
+% --- Language and Computer Modern fonts (LuaLaTeX + fontspec) ----------------
 % Built with LuaLaTeX so Greek (e.g. \chapter{Εισαγωγή}) and any UTF-8 render.
-% Tinos/Arimo/Cousine are the Times/Arial/Courier metric clones (the same look
-% as MS Word's core fonts) and -- unlike newtx/helvet or the TeX Gyre fonts --
-% carry the FULL Greek alphabet *including combining accents* (U+0301 tonos,
-% U+0308 dialytika), which babel's Greek captions (e.g. "Κεφάλαιο") rely on.
-% No inputenc/fontenc needed: LuaTeX is natively UTF-8.
+% New Computer Modern (NewCM) is the modern, Unicode OpenType incarnation of
+% Knuth's Computer Modern -- the classic default (La)TeX look -- with FULL Greek
+% (monotonic + polytonic) in every weight, so the chapter titles and babel's
+% Greek captions ("Κεφάλαιο", "Βιβλιογραφία") render bold/italic correctly.
+% (Plain Latin Modern's OTF carries NO Greek, hence NewCM.)  Loaded by file name
+% so the bold/italic faces link unambiguously.  LuaTeX is natively UTF-8.
 \usepackage{amsmath}
 \usepackage{amsthm}
 \usepackage{fontspec}
 \usepackage{unicode-math}
-\setmainfont{Tinos}                         % Times New Roman clone, full Greek
-\setsansfont{Arimo}[Scale=0.92]             % Arial/Helvetica clone, full Greek
-\setmonofont{Cousine}[Scale=MatchLowercase] % Courier clone (code; supervisor's pick)
-\setmathfont{TeX Gyre Termes Math}          % Times-style math (math Greek incl.)
+\setmainfont{NewCM10-Regular.otf}[          % Computer Modern (Unicode), full Greek
+  BoldFont       = NewCM10-Bold.otf,
+  ItalicFont     = NewCM10-Italic.otf,
+  BoldItalicFont = NewCM10-BoldItalic.otf]
+\setsansfont{NewCMSans10-Regular.otf}[      % CM sans, full Greek
+  BoldFont       = NewCMSans10-Bold.otf,
+  ItalicFont     = NewCMSans10-Oblique.otf,
+  BoldItalicFont = NewCMSans10-BoldOblique.otf]
+\setmonofont{NewCMMono10-Regular.otf}[      % CM typewriter (code listings)
+  BoldFont       = NewCMMono10-Bold.otf,
+  ItalicFont     = NewCMMono10-Italic.otf,
+  BoldItalicFont = NewCMMono10-BoldOblique.otf]
+\setmathfont{NewCMMath-Regular.otf}         % Computer Modern math (math Greek incl.)
 \usepackage[english,greek]{babel}          % main = Greek; English available
 \usepackage{microtype}                     % full micro-typography under LuaTeX
 
