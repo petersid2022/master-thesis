@@ -176,71 +176,72 @@ text generation, inference optimization, latency, energy efficiency,
 \pagenumbering{arabic}
 
 \chapter{Εισαγωγή}
-This research addresses the inference scheduling problem,
-drawing from compiler optimization theory
-(e.g., branch prediction, profile-guided optimization, instruction scheduling)
-to minimize both latency and energy usage.
-These parallels arise from the fact that LLM inference can be viewed as a
-computational pipeline,
-similar to how compilers treat code as a sequence or graph to optimize
-(see \href{https://en.wikipedia.org/wiki/Abstract_syntax_tree}{Abstract Syntax Tree}).
-Previous research shows speedups of 2--3\(\times\) from speculative decoding
-alone~\cite{LKM23,Che23},
-and layering compiler-inspired optimizations could yield even greater
-improvements,
-especially for edge cases like long sequences or low-acceptance-rate drafts.
+\section{Το πρόβλημα χρονοπρογραμματισμού του συμπερασμού}
+Η βέλτιστη συνύπαρξη πολλαπλών εκτελούμενων διεργασιών στη μνήμη ενός υπολογιστή, γνωστή στην βιβλογραφία ως Scheduling, αποτελεί μία απο τις σημαντικότερες προκλήσεις στην έρευνα των  Μεγάλων Γλωσσικών Μοντέλων (LLMs), ενώ παράλληλα έχει λειτουργήσει ως καταλύτης για σημαντικές ερευνητικές εξελίξεις. Αντλώντας έμπνευση από την Θεωρία Βελτιστοποίησης Μεταγλωττιστή (Compiler Optimization Theory), σύμφωνα με την οποία η σχεδίαση ενός βελτιστοποιημένου μεταγλωττιστή (σε πτυχές όπως η ελαχιστοποίηση του χρόνου εκτέλεσης ή της βέλτισης παραγωγής γλώσσας μηχανής) μπορεί να επιτευχθεί με την εφαρμογή πληθώρων τεχνικών όπως η 
+% This research addresses the inference scheduling problem,
+% drawing from compiler optimization theory
+% (e.g., branch prediction, profile-guided optimization, instruction scheduling)
+% to minimize both latency and energy usage.
+% These parallels arise from the fact that LLM inference can be viewed as 
+% computational pipeline,
+% similar to how compilers treat code as a sequence or graph to optimize
+% (see \href{https://en.wikipedia.org/wiki/Abstract_syntax_tree}{Abstract Syntax Tree}).
+% Previous research shows speedups of 2--3\(\times\) from speculative decoding
+% alone~\cite{LKM23,Che23},
+% and layering compiler-inspired optimizations could yield even greater
+% improvements,
+% especially for edge cases like long sequences or low-acceptance-rate drafts.
 
-\section{Speculative decoding overview}
-Speculative decoding functions as follows:
-\begin{itemize}
-  \item The small LLM generates a series of sequential tokens,
-        after which the large LLM evaluates all of these in a single pass.
-  \item For each token, if the probability in the large LLM is higher than that
-        of the small one, it is accepted directly
-        (therefore not affecting the large LLM's statistics).
-        If the probability is lower, the likelihood of acceptance is
-        proportional to the difference in probabilities.
-        This method makes it likely that the token will not be accepted,
-        in which case the computation is wasted.
-        If the small model performs well,
-        we gain a speedup without changing the output,
-        but if it performs poorly,
-        we waste significant compute resources, slowing down the process.
-        \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor}.)}
-  \item Speculative decoding variants allow tokens to exit the model early if
-        the model is confident,
-        similar to compiler optimizations like function inlining or dead code
-        elimination, which skip unnecessary computations.
-  \item Speculative sampling often builds a tree of possible token paths during
-        text generation.
-        We can apply compiler-style graph transformations
-        (e.g., pruning redundant branches via static analysis or common
-        subexpression elimination on token probabilities)
-        to optimize the tree exploration.
-  \item Just as compilers schedule operations for parallel execution,
-        speculative sampling could \enquote{schedule} token generation to
-        prioritize high-probability paths,
-        inspired by compiler techniques for out-of-order execution.
-\end{itemize}
+% Speculative decoding functions as follows:
+% \begin{itemize}
+%   \item The small LLM generates a series of sequential tokens,
+%         after which the large LLM evaluates all of these in a single pass.
+%   \item For each token, if the probability in the large LLM is higher than that
+%         of the small one, it is accepted directly
+%         (therefore not affecting the large LLM's statistics).
+%         If the probability is lower, the likelihood of acceptance is
+%         proportional to the difference in probabilities.
+%         This method makes it likely that the token will not be accepted,
+%         in which case the computation is wasted.
+%         If the small model performs well,
+%         we gain a speedup without changing the output,
+%         but if it performs poorly,
+%         we waste significant compute resources, slowing down the process.
+%         \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor}.)}
+%   \item Speculative decoding variants allow tokens to exit the model early if
+%         the model is confident,
+%         similar to compiler optimizations like function inlining or dead code
+%         elimination, which skip unnecessary computations.
+%   \item Speculative sampling often builds a tree of possible token paths during
+%         text generation.
+%         We can apply compiler-style graph transformations
+%         (e.g., pruning redundant branches via static analysis or common
+%         subexpression elimination on token probabilities)
+%         to optimize the tree exploration.
+%   \item Just as compilers schedule operations for parallel execution,
+%         speculative sampling could \enquote{schedule} token generation to
+%         prioritize high-probability paths,
+%         inspired by compiler techniques for out-of-order execution.
+% \end{itemize}
 
-\section{Research directions and objectives}
-This thesis frames LLM inference through the lens of compiler optimization
-and explores the following directions and objectives:
-\begin{itemize}
-  \item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}.
-  \item Compiler-inspired runtime design for speculative text generation with
-        multi-model pipelines.
-  \item Prediction-and-scheduling runtime with compiler-like heuristics.
-  \item Code generation for inference graphs.
-  \item SLM--LLM pipeline as an intermediate representation (IR).
-  \item Adaptive runtime scheduler (like a JIT) for inference.
-  \item Profiling framework that drives scheduling decisions.
-  \item Performance/energy trade-offs akin to compiler optimization trade-offs.
-  \item Investigate the impact of speculative sampling on LLM performance.
-  \item Develop methods to enhance the diversity of generated text.
-  \item Propose optimizations to improve generation speed while maintaining
-        high-quality output.
-\end{itemize}
+% \section{Research directions and objectives}
+% This thesis frames LLM inference through the lens of compiler optimization
+% and explores the following directions and objectives:
+% \begin{itemize}
+%   \item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}.
+%   \item Compiler-inspired runtime design for speculative text generation with
+%         multi-model pipelines.
+%   \item Prediction-and-scheduling runtime with compiler-like heuristics.
+%   \item Code generation for inference graphs.
+%   \item SLM--LLM pipeline as an intermediate representation (IR).
+%   \item Adaptive runtime scheduler (like a JIT) for inference.
+%   \item Profiling framework that drives scheduling decisions.
+%   \item Performance/energy trade-offs akin to compiler optimization trade-offs.
+%   \item Investigate the impact of speculative sampling on LLM performance.
+%   \item Develop methods to enhance the diversity of generated text.
+%   \item Propose optimizations to improve generation speed while maintaining
+%         high-quality output.
+% \end{itemize}
 
 % ============================= References ===================================
 \nocite{*}
