@@ -13,8 +13,8 @@ ssd/
 .venv/
 results/spectre/
 spectre/presentation/png/
-*.bbl
-*.bcf
+*.bbl*
+*.bcf*
 *.bib
 *.blg
 *.run.xml
@@ -26,5 +26,8 @@ spectre/presentation/png/
 *.pdf
 *.synctex.gz
 *.toc
+*.lof
+*.lot
 *.synctex.gz.sum.synctex
+_region_.tex
 auto/
