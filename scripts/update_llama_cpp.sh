@@ -2,7 +2,7 @@
 # Sync the llama.cpp fork's master with upstream and bump the submodule here.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sub="$root/llama.cpp"
 
 git -C "$sub" fetch upstream --prune
