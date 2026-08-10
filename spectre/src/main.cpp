@@ -343,39 +343,219 @@ private:
   int step = 0;
 };
 
-class Application {
+class SpectreConfig {
+private:
+  Parameters params;
+
+  void print_usage(char *argv[]) const;
+
 public:
-  Application(int argc, char **argv) {
-    this->parse_cli_args(argc, argv);
-  };
+  static SpectreConfig from_args(int argc, char *argv[]);
 
-  Application(const Application &) = delete;
-  Application &operator=(const Application &) = delete;
+  const Parameters &parameters() const { return this->params; }
+};
 
-  Application(Application &&) = delete;
-  Application &operator=(Application &&) = delete;
+void SpectreConfig::print_usage(char *argv[]) const {
+  const char *name = argv[0];
 
-  ~Application() {
-    llama_sampler_free(sampler_target);
-    if (params.draft_speculative_decoding_is_enabled()) {
-      llama_sampler_free(sampler_draft);
-      llama_batch_free(speculation_batch_target);
-      llama_batch_free(speculation_batch_draft);
-      llama_free(ctx_draft);
-      llama_model_free(model_draft);
+  // truncate the default prompt for display
+  constexpr std::size_t PROMPT_PREVIEW_MAX = 60;
+  std::string prompt_preview = this->params.prompt;
+
+  if (prompt_preview.size() > PROMPT_PREVIEW_MAX) {
+    prompt_preview = prompt_preview.substr(0, PROMPT_PREVIEW_MAX) + "...";
+  }
+
+  print(GGML_LOG_LEVEL_NONE, "Usage: {} --target-model <file.gguf> [--draft-model <file.gguf>] [OPTIONS]", name);
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Models:");
+  print(GGML_LOG_LEVEL_NONE, "  --target-model <file>    gguf target model file (required)");
+  print(GGML_LOG_LEVEL_NONE, "  --draft-model <file>     gguf draft model file (enables speculative decoding)");
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Runtime:");
+  print(GGML_LOG_LEVEL_NONE, "  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
+  print(GGML_LOG_LEVEL_NONE, "  --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
+  print(GGML_LOG_LEVEL_NONE, "  --n-predict <n>          hard cap on generated tokens (0 = unlimited) (default: {})", this->params.n_predict);
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Sampling:");
+  print(GGML_LOG_LEVEL_NONE, "  --temp <n>               temperature (default: {})", this->params.temp);
+  print(GGML_LOG_LEVEL_NONE, "  --top-p <n>              top-p sampling (default: {})", this->params.top_p);
+  print(GGML_LOG_LEVEL_NONE, "  --top-k <n>              top-k sampling (default: {})", this->params.top_k);
+  print(GGML_LOG_LEVEL_NONE, "  --greedy                 greedy sampler; overrides temp/top-p/top-k (default: {})", this->params.greedy ? "true" : "false");
+  print(GGML_LOG_LEVEL_NONE, "  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Speculation (only effective when --draft-model is set):");
+  print(GGML_LOG_LEVEL_NONE, "  --ngram                  enable n-gram drafter (hybrid: ngram first, draft model on miss) (default: {})", this->params.ngram);
+  print(GGML_LOG_LEVEL_NONE, "  --n-gram-size <n>        lookup pattern length for the n-gram drafter (default: {})", this->params.n_gram_size);
+  print(GGML_LOG_LEVEL_NONE, "  --m-gram-size <n>        max draft length proposed after an n-gram hit (default: {})", this->params.m_gram_size);
+  print(GGML_LOG_LEVEL_NONE, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
+  print(GGML_LOG_LEVEL_NONE, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Output / reproducibility:");
+  print(GGML_LOG_LEVEL_NONE, "  --seed <n>               sampler seed (default: {})", this->params.seed);
+  print(GGML_LOG_LEVEL_NONE, "  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
+  print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Misc:");
+  print(GGML_LOG_LEVEL_NONE, "  -h, --help               print this message and exit");
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "Examples:");
+  print(GGML_LOG_LEVEL_NONE, "  # vanilla autoregressive baseline");
+  print(GGML_LOG_LEVEL_NONE, "  {} --target-model Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf \\", name);
+  print(GGML_LOG_LEVEL_NONE, "      --prompt \"Tell me a joke\" --ctx-size 8192 --n-gpu-layers -1 \\");
+  print(GGML_LOG_LEVEL_NONE, "      --n-predict 256 --seed 42 --run-id ar-baseline_seed42");
+  print(GGML_LOG_LEVEL_NONE, "");
+  print(GGML_LOG_LEVEL_NONE, "  # speculative decoding with a smaller draft model");
+  print(GGML_LOG_LEVEL_NONE, "  {} --target-model Nemotron-3-Nano-4B-BF16.gguf \\", name);
+  print(GGML_LOG_LEVEL_NONE, "      --draft-model Nemotron-3-Nano-4B-Q8_0.gguf \\");
+  print(GGML_LOG_LEVEL_NONE, "      --n-max 8 --n-predict 256 --seed 42 --run-id spec-nmax8_seed42");
+}
+
+SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
+  SpectreConfig config{};
+  Parameters &params = config.params;
+
+  for (int i = 1; i < argc; i++) {
+    try {
+      if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
+        config.print_usage(argv);
+        std::exit(0);
+      } else if (std::strcmp(argv[i], "--target-model") == 0) {
+        if (i + 1 < argc) {
+          params.target_model_path = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for target model");
+        }
+      } else if (std::strcmp(argv[i], "--draft-model") == 0) {
+        if (i + 1 < argc) {
+          params.draft_model_path = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for draft model");
+        }
+      } else if (std::strcmp(argv[i], "--ctx-size") == 0) {
+        if (i + 1 < argc) {
+          params.ctx = (uint32_t)std::stoi(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for context size");
+        }
+      } else if (std::strcmp(argv[i], "--n-gpu-layers") == 0) {
+        if (i + 1 < argc) {
+          params.ngl = std::stoi(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for n-gpu-layers");
+        }
+      } else if (std::strcmp(argv[i], "--prompt") == 0) {
+        if (i + 1 < argc) {
+          params.prompt = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for prompt");
+        }
+      } else if (std::strcmp(argv[i], "--temp") == 0) {
+        if (i + 1 < argc) {
+          params.temp = std::stof(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for temperature");
+        }
+      } else if (std::strcmp(argv[i], "--top-p") == 0) {
+        if (i + 1 < argc) {
+          params.top_p = std::stof(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for top-p");
+        }
+      } else if (std::strcmp(argv[i], "--greedy") == 0) {
+        params.greedy = true;
+      } else if (std::strcmp(argv[i], "--ngram") == 0) {
+        params.ngram = true;
+      } else if (std::strcmp(argv[i], "--n-gram-size") == 0) {
+        if (i + 1 < argc) {
+          params.n_gram_size = std::stoi(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --n-gram-size");
+        }
+      } else if (std::strcmp(argv[i], "--m-gram-size") == 0) {
+        if (i + 1 < argc) {
+          params.m_gram_size = std::stoi(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --m-gram-size");
+        }
+      } else if (std::strcmp(argv[i], "--top-k") == 0) {
+        if (i + 1 < argc) {
+          params.top_k = std::stoi(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for top-k");
+        }
+      } else if (std::strcmp(argv[i], "--seed") == 0) {
+        if (i + 1 < argc) {
+          params.seed = (uint32_t)std::stoul(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --seed");
+        }
+      } else if (std::strcmp(argv[i], "--results-dir") == 0) {
+        if (i + 1 < argc) {
+          params.results_dir = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --results-dir");
+        }
+      } else if (std::strcmp(argv[i], "--run-id") == 0) {
+        if (i + 1 < argc) {
+          params.run_id = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --run-id");
+        }
+      } else if (std::strcmp(argv[i], "--n-predict") == 0) {
+        if (i + 1 < argc) {
+          params.n_predict = std::stoll(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --n-predict");
+        }
+      } else if (std::strcmp(argv[i], "--n-max") == 0) {
+        if (i + 1 < argc) {
+          params.n_max = std::stoll(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --n-max");
+        }
+      } else if (std::strcmp(argv[i], "--n-min") == 0) {
+        if (i + 1 < argc) {
+          params.n_min = std::stoll(argv[++i]);
+        } else {
+          config.print_usage(argv);
+          throw std::runtime_error("Missing argument for --n-min");
+        }
+      } else {
+        config.print_usage(argv);
+        throw std::runtime_error(std::format("Unknown argument: {}", argv[i]));
+      }
+    } catch (const std::invalid_argument &e) {
+      throw std::runtime_error(std::format("Invalid numeric value '{}': {}", argv[i], e.what()));
+    } catch (const std::out_of_range &e) {
+      throw std::runtime_error(std::format("Numeric value out of range '{}': {}", argv[i], e.what()));
     }
-    llama_free(ctx_target);
-    llama_model_free(model_target);
-    llama_backend_free();
   }
 
-  void start(void) {
-    this->initialize();
-    this->tokenize();
-    this->decode();
-    this->run();
+  if (params.target_model_path.empty()) {
+    config.print_usage(argv);
+    throw std::runtime_error("Error: --target-model argument is required");
   }
 
+  return config;
+}
+
+class Spectre {
 private:
   Parameters params;
 
@@ -402,203 +582,6 @@ private:
 
   // p_draft for each token returned by the last call to draft(), parallel to the returned vector.
   std::vector<double> last_draft_probs;
-
-  void print_usage(char **argv) {
-    const char *name = argv[0];
-
-    // truncate the default prompt for display
-    constexpr std::size_t PROMPT_PREVIEW_MAX = 60;
-    std::string prompt_preview = this->params.prompt;
-    if (prompt_preview.size() > PROMPT_PREVIEW_MAX) {
-      prompt_preview = prompt_preview.substr(0, PROMPT_PREVIEW_MAX) + "...";
-    }
-
-    print(GGML_LOG_LEVEL_NONE, "Usage: {} --target-model <file.gguf> [--draft-model <file.gguf>] [OPTIONS]", name);
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Models:");
-    print(GGML_LOG_LEVEL_NONE, "  --target-model <file>    gguf target model file (required)");
-    print(GGML_LOG_LEVEL_NONE, "  --draft-model <file>     gguf draft model file (enables speculative decoding)");
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Runtime:");
-    print(GGML_LOG_LEVEL_NONE, "  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", this->params.ctx);
-    print(GGML_LOG_LEVEL_NONE, "  --n-gpu-layers <n>       layers in VRAM (<0 = all) (default: {})", this->params.ngl);
-    print(GGML_LOG_LEVEL_NONE, "  --n-predict <n>          hard cap on generated tokens (0 = unlimited) (default: {})", this->params.n_predict);
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Sampling:");
-    print(GGML_LOG_LEVEL_NONE, "  --temp <n>               temperature (default: {})", this->params.temp);
-    print(GGML_LOG_LEVEL_NONE, "  --top-p <n>              top-p sampling (default: {})", this->params.top_p);
-    print(GGML_LOG_LEVEL_NONE, "  --top-k <n>              top-k sampling (default: {})", this->params.top_k);
-    print(GGML_LOG_LEVEL_NONE, "  --greedy                 greedy sampler; overrides temp/top-p/top-k (default: {})", this->params.greedy ? "true" : "false");
-    print(GGML_LOG_LEVEL_NONE, "  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Speculation (only effective when --draft-model is set):");
-    print(GGML_LOG_LEVEL_NONE, "  --ngram                  enable n-gram drafter (hybrid: ngram first, draft model on miss) (default: {})", this->params.ngram);
-    print(GGML_LOG_LEVEL_NONE, "  --n-gram-size <n>        lookup pattern length for the n-gram drafter (default: {})", this->params.n_gram_size);
-    print(GGML_LOG_LEVEL_NONE, "  --m-gram-size <n>        max draft length proposed after an n-gram hit (default: {})", this->params.m_gram_size);
-    print(GGML_LOG_LEVEL_NONE, "  --n-max <n>              max tokens to draft per speculative call (default: {})", this->params.n_max);
-    print(GGML_LOG_LEVEL_NONE, "  --n-min <n>              min draft length; below this the draft is discarded (default: {})", this->params.n_min);
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Output / reproducibility:");
-    print(GGML_LOG_LEVEL_NONE, "  --seed <n>               sampler seed (default: {})", this->params.seed);
-    print(GGML_LOG_LEVEL_NONE, "  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
-    print(GGML_LOG_LEVEL_NONE, "  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", this->params.results_dir);
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Misc:");
-    print(GGML_LOG_LEVEL_NONE, "  -h, --help               print this message and exit");
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "Examples:");
-    print(GGML_LOG_LEVEL_NONE, "  # vanilla autoregressive baseline");
-    print(GGML_LOG_LEVEL_NONE, "  {} --target-model Qwen2.5-Coder-3B-Instruct-IQ2_M.gguf \\", name);
-    print(GGML_LOG_LEVEL_NONE, "      --prompt \"Tell me a joke\" --ctx-size 8192 --n-gpu-layers -1 \\");
-    print(GGML_LOG_LEVEL_NONE, "      --n-predict 256 --seed 42 --run-id ar-baseline_seed42");
-    print(GGML_LOG_LEVEL_NONE, "");
-    print(GGML_LOG_LEVEL_NONE, "  # speculative decoding with a smaller draft model");
-    print(GGML_LOG_LEVEL_NONE, "  {} --target-model Nemotron-3-Nano-4B-BF16.gguf \\", name);
-    print(GGML_LOG_LEVEL_NONE, "      --draft-model Nemotron-3-Nano-4B-Q8_0.gguf \\");
-    print(GGML_LOG_LEVEL_NONE, "      --n-max 8 --n-predict 256 --seed 42 --run-id spec-nmax8_seed42");
-  }
-
-  void parse_cli_args(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-      try {
-        if (std::strcmp(argv[i], "-h") == 0 ||
-            std::strcmp(argv[i], "--help") == 0) {
-          print_usage(argv);
-          std::exit(0);
-        } else if (std::strcmp(argv[i], "--target-model") == 0) {
-          if (i + 1 < argc) {
-            this->params.target_model_path = argv[++i];
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for target model");
-          }
-        } else if (std::strcmp(argv[i], "--draft-model") == 0) {
-          if (i + 1 < argc) {
-            this->params.draft_model_path = argv[++i];
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for draft model");
-          }
-        } else if (std::strcmp(argv[i], "--ctx-size") == 0) {
-          if (i + 1 < argc) {
-            this->params.ctx = (uint32_t)std::stoi(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for context size");
-          }
-        } else if (std::strcmp(argv[i], "--n-gpu-layers") == 0) {
-          if (i + 1 < argc) {
-            this->params.ngl = std::stoi(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for n-gpu-layers");
-          }
-        } else if (std::strcmp(argv[i], "--prompt") == 0) {
-          if (i + 1 < argc) {
-            this->params.prompt = argv[++i];
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for prompt");
-          }
-        } else if (std::strcmp(argv[i], "--temp") == 0) {
-          if (i + 1 < argc) {
-            this->params.temp = std::stof(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for temperature");
-          }
-        } else if (std::strcmp(argv[i], "--top-p") == 0) {
-          if (i + 1 < argc) {
-            this->params.top_p = std::stof(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for top-p");
-          }
-        } else if (std::strcmp(argv[i], "--greedy") == 0) {
-          this->params.greedy = true;
-        } else if (std::strcmp(argv[i], "--ngram") == 0) {
-          this->params.ngram = true;
-        } else if (std::strcmp(argv[i], "--n-gram-size") == 0) {
-          if (i + 1 < argc) {
-            this->params.n_gram_size = std::stoi(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --n-gram-size");
-          }
-        } else if (std::strcmp(argv[i], "--m-gram-size") == 0) {
-          if (i + 1 < argc) {
-            this->params.m_gram_size = std::stoi(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --m-gram-size");
-          }
-        } else if (std::strcmp(argv[i], "--top-k") == 0) {
-          if (i + 1 < argc) {
-            this->params.top_k = std::stoi(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for top-k");
-          }
-        } else if (std::strcmp(argv[i], "--seed") == 0) {
-          if (i + 1 < argc) {
-            this->params.seed = (uint32_t)std::stoul(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --seed");
-          }
-        } else if (std::strcmp(argv[i], "--results-dir") == 0) {
-          if (i + 1 < argc) {
-            this->params.results_dir = argv[++i];
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --results-dir");
-          }
-        } else if (std::strcmp(argv[i], "--run-id") == 0) {
-          if (i + 1 < argc) {
-            this->params.run_id = argv[++i];
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --run-id");
-          }
-        } else if (std::strcmp(argv[i], "--n-predict") == 0) {
-          if (i + 1 < argc) {
-            this->params.n_predict = std::stoll(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --n-predict");
-          }
-        } else if (std::strcmp(argv[i], "--n-max") == 0) {
-          if (i + 1 < argc) {
-            this->params.n_max = std::stoll(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --n-max");
-          }
-        } else if (std::strcmp(argv[i], "--n-min") == 0) {
-          if (i + 1 < argc) {
-            this->params.n_min = std::stoll(argv[++i]);
-          } else {
-            print_usage(argv);
-            throw std::runtime_error("Missing argument for --n-min");
-          }
-        } else {
-          print_usage(argv);
-          throw std::runtime_error(std::format("Unknown argument: {}", argv[i]));
-        }
-      } catch (const std::invalid_argument &e) {
-        throw std::runtime_error(
-            std::format("Invalid numeric value '{}': {}", argv[i], e.what()));
-      } catch (const std::out_of_range &e) {
-        throw std::runtime_error(
-            std::format("Numeric value out of range '{}': {}", argv[i], e.what()));
-      }
-    }
-
-    if (this->params.target_model_path.empty()) {
-      print_usage(argv);
-      throw std::runtime_error("Error: --target-model argument is required");
-    }
-  }
 
   std::tuple<double, double> softmax(
       const float *logits_row,
@@ -646,7 +629,7 @@ private:
     return std::make_tuple(logit, prob);
   }
 
-  void initialize(void) {
+  void initialize_context(void) {
     try {
       llama_log_set(
           [](ggml_log_level level, const char *text, void * /*user_data*/) {
@@ -667,8 +650,9 @@ private:
       // model_params.devices = &model_backend;
       model_params.n_gpu_layers = this->params.ngl;
 
-      model_params.use_mmap = llama_supports_mmap();
-      model_params.use_mlock = llama_supports_mlock();
+      model_params.load_mode = llama_supports_mmap()
+                                   ? LLAMA_LOAD_MODE_MMAP
+                                   : LLAMA_LOAD_MODE_NONE;
 
       this->model_target = llama_model_load_from_file(this->params.target_model_path.c_str(), model_params);
       if (!this->model_target) {
@@ -722,7 +706,7 @@ private:
     }
   }
 
-  void tokenize(void) {
+  void tokenize_prompts(void) {
     this->vocab_target = llama_model_get_vocab(this->model_target);
 
     if (this->params.draft_speculative_decoding_is_enabled()) {
@@ -828,7 +812,7 @@ private:
     print(GGML_LOG_LEVEL_INFO, "llama_vocab_type:        {}", static_cast<int>(llama_vocab_type(this->vocab_target)));
   }
 
-  void decode(void) {
+  void decode_prompts(void) {
     struct llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
 
     sampler_params.no_perf = false;
@@ -892,7 +876,7 @@ private:
     // }
   }
 
-  void run(void) {
+  void execute_forward_pass(void) {
     // current accepted token each pass
     llama_token current_token = -1;
     std::size_t tokens_decoded = 0;
@@ -1539,12 +1523,44 @@ private:
 
     return result;
   }
+
+public:
+  Spectre(const SpectreConfig &config) : params{config.parameters()} {}
+
+  Spectre(const Spectre &) = delete;
+  Spectre &operator=(const Spectre &) = delete;
+
+  Spectre(Spectre &&) = delete;
+  Spectre &operator=(Spectre &&) = delete;
+
+  ~Spectre() {
+    llama_sampler_free(sampler_target);
+    if (params.draft_speculative_decoding_is_enabled()) {
+      llama_sampler_free(sampler_draft);
+      llama_batch_free(speculation_batch_target);
+      llama_batch_free(speculation_batch_draft);
+      llama_free(ctx_draft);
+      llama_model_free(model_draft);
+    }
+    llama_free(ctx_target);
+    llama_model_free(model_target);
+    llama_backend_free();
+  }
+
+  int run(void) {
+    initialize_context();
+    tokenize_prompts();
+    decode_prompts();
+    execute_forward_pass();
+    return EXIT_SUCCESS;
+  }
 };
 
 int main(int argc, char **argv) {
   try {
-    Application app(argc, argv);
-    app.start();
+    auto config = SpectreConfig::from_args(argc, argv);
+    Spectre spectre{config};
+    return spectre.run();
   } catch (const std::exception &e) {
     print(GGML_LOG_LEVEL_ERROR, e.what());
     return 1;
