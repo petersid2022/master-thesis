@@ -15,3 +15,12 @@ if ! git -C "$root" diff --cached --quiet -- llama.cpp; then
 	git -C "$root" commit -m "llama.cpp: sync fork master with upstream" -- llama.cpp
 	git -C "$root" push origin main
 fi
+
+#
+# For rebasing my llama.cpp PR
+#
+# cd llama.cpp
+# git switch <branch name of my PR>
+# git rebase upstream/master
+# # inspect range-diff, build, test
+# git push --force-with-lease origin <branch name of my PR>
