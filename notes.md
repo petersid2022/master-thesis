@@ -1128,3 +1128,586 @@ X_{\mathrm{AR}}\sim P_{\mathrm{target}}.
 αλλά δύο ανεξάρτητα παραγόμενα κείμενα μπορούν να έχουν διαφορετικό PPL—όπως δύο ρίψεις του ίδιου δίκαιου νομίσματος δεν
 δίνουν αναγκαστικά το ίδιο αποτέλεσμα.
 ```
+3. 
+```
+* Positional information, such as RoPE, is applied so that the model distinguishes:
+
+    `A` at position 0
+
+    from:
+
+    `A` at position 4
+
+* The embedding matrix can be viewed as:
+
+    embedding_table[vocabulary_size][model_dimension]
+
+* A Transformer repeatedly applies two main operations:
+
+    1. Attention                    :   exchange information between tokens
+    2. FFN (Feed-Forward Network)   :   transform the information inside each token
+
+    This distinction is important:
+
+        Attention:
+            token E collects information from A, B, C, D, E
+
+        FFN:
+            transforms E’s resulting feature vector
+            without directly reading the other positions
+
+* What is a decoder-only Transformer? (used by GPT, Llama, Qwen, Mistral, Gemma)
+
+    A decoder-only Transformer is a model designed to predict the next token from the tokens preceding it.
+
+    Given: A B C D E
+
+    it models: P(F | A B C D E)
+
+    A decoder-only model uses causal self-attention.
+    "Causal" here means that a token cannot inspect future tokens:
+
+        ┌───────┬─────────────┐
+        │ Token │ May inspect │
+        ├───────┼─────────────┤
+        │ A     │ A           │
+        ├───────┼─────────────┤
+        │ B     │ A B         │
+        ├───────┼─────────────┤
+        │ C     │ A B C       │
+        ├───────┼─────────────┤
+        │ D     │ A B C D     │
+        ├───────┼─────────────┤
+        │ E     │ A B C D E   │
+        └───────┴─────────────┘
+
+    The original Transformer had two separate parts:
+
+        >       source text → encoder → internal representation
+        >                                   ↓
+        >       generated text ← decoder ← representation
+
+    GPT-style language models remove the separate encoder. Everything is supplied as one prefix:
+
+        >       Question + instructions + previous answer tokens
+        >                              ↓
+        >                       decoder-only model
+        >                              ↓
+        >                         next token
+
+    In general:
+        
+        ┌─────────────────┬───────────────────────────────────────┬─────────────────────────────────────────┐
+        │ Architecture    │ Visibility                            │ Typical purpose                         │
+        ├─────────────────┼───────────────────────────────────────┼─────────────────────────────────────────┤
+        │ Encoder-only    │ Both directions                       │ Understanding and embeddings            │
+        ├─────────────────┼───────────────────────────────────────┼─────────────────────────────────────────┤
+        │ Decoder-only    │ Current and previous tokens           │ Text generation                         │
+        ├─────────────────┼───────────────────────────────────────┼─────────────────────────────────────────┤
+        │ Encoder-decoder │ Encoder bidirectional, decoder causal │ Translation and sequence transformation │
+        └─────────────────┴───────────────────────────────────────┴─────────────────────────────────────────┘
+
+* What is attention?
+
+    Attention allows one token to retrieve relevant information from other tokens.
+    It is not a manually programmed grammatical rule.
+    The model learns useful relationships from training data.
+
+    Consider:
+    The animal did not cross the street because it was tired.
+    
+    When processing it, the model needs information from animal.
+    
+    Attention provides a learned mechanism for forming connections such as:
+    it → animal
+    
+* Query, key, and value
+
+    For every token, the model creates three vectors:
+    
+        • Query (Q): what information is this token looking for?
+        • Key (K): what kind of information does this token contain?
+        • Value (V): what information should this token contribute?
+
+    A useful analogy is a search system:
+
+        • Query: search request
+        • Key: document description
+        • Value: document contents
+
+    For tokens A B C D E, each one produces:
+
+        A → q_A, k_A, v_A
+        B → q_B, k_B, v_B
+        C → q_C, k_C, v_C
+        D → q_D, k_D, v_D
+        E → q_E, k_E, v_E
+
+    Comparing queries and keys
+
+        Suppose the model is processing E.
+        It compares q_E with every allowed key:
+
+            q_E · k_A
+            q_E · k_B
+            q_E · k_C
+            q_E · k_D
+            q_E · k_E
+
+        Larger dot product means that the corresponding token may be more relevant.
+
+        The scores are scaled: score(E,j) = q_E · k_j / sqrt(head_dimension)
+
+        The causal mask sets future-token scores to negative infinity.
+        For E, there are no future prompt tokens. For C, the scores for D and E would be masked.
+
+        Softmax converts the scores into weights:
+
+            A: 0.05
+            B: 0.10
+            C: 0.15
+            D: 0.60
+            E: 0.10
+        
+        The attention result is a weighted sum of values:
+
+            output_E =
+                0.05 × v_A +
+                0.10 × v_B +
+                0.15 × v_C +
+                0.60 × v_D +
+                0.10 × v_E
+
+* Activation functions
+
+    Activation functions allow neural networks to represent nonlinear relationships.
+    Without nonlinear activations, stacking linear matrix multiplications would still
+    behave like one large linear transformation.
+
+    SiLU is an activation function:
+    
+        SiLU(x) = x × sigmoid(x)
+
+    SiLU is a smooth alternative to activations such as ReLU.
+
+* RoPE: Rotary Positional Embedding
+
+    Attention alone does not inherently know token order.
+
+    Without positional information, these could appear too similar:
+        dog bites man
+        man bites dog
+
+    RoPE encodes positions by rotating query and key vector components according to token position:
+
+        A uses position 0
+        B uses position 1
+        C uses position 2
+        ...
+
+    The resulting query-key dot products contain information about relative token distance.
+
+    KV-cache entries and newly decoded tokens must have correct positions because RoPE is applied using those positions.
+
+    Incorrect KV positions can break generation, especially for models with more complex RoPE variants.
+
+* Logits
+
+    Logits are the model’s unnormalized vocabulary scores:
+    
+        token F : 14.2
+        token G : 11.7
+        token H :  8.4
+
+    Greedy decoding selects the largest logit
+    Stochastic sampling may transform them into probabilities using softmax.
+
+* Softmax
+
+    Softmax converts arbitrary scores into nonnegative values that sum to one
+
+        logits        : 14.2   11.7   8.4
+        probabilities : 0.92   0.075  0.005
+
+    Appears in two places:
+
+        1. attention scores become attention weights;
+        2. vocabulary logits become token probabilities.
+
+* KV cache
+
+    The KV cache stores keys and values from previous token positions at every attention layer.
+
+    When generating F after A B C D E, the model reuses cached:
+
+        K/V for A B C D E
+
+    It only calculates the new vectors for F.
+
+* A compact mental model
+
+    Attention   =   tokens communicate with previous tokens
+    FFN         =   each token transforms its own features
+    KV cache    =   remember previous attention keys and values
+    LM head     =   turn the final token representation into vocabulary scores
+    Sampler     =   choose the next token from those scores
+
+```
+4.
+```
+    * Let the cheap draft model guess several future tokens.
+    * Run the expensive target model once over those guesses.
+    * Keep guesses that exactly match what the target model would have produced.
+    * At the first mismatch, discard the remaining guesses and emit the target’s token instead.
+```
+5.
+```
+* Remember the next-token shift:
+
+    logits after E predict the token after E
+    logits after F predict the token after F
+    logits after G predict the token after G
+    logits after H predict the token after H
+```
+6.
+```
+    The target KV cache currently contains:
+
+        A B C D
+    
+    Spectre constructs:
+    
+        target batch = [E, F, G, H]
+    
+    The complete assumed sequence is therefore:
+    
+    cached prefix: A B C D
+    new batch:             E F G H
+    
+    The target model performs one forward pass over the complete batch.
+    
+    Because attention is causal, each position sees only the history preceding it:
+    
+    ┌────────────────┬───────────────────────┬───────────────────────┐
+    │ Batch position │ Token being processed │ History visible there │
+    ├────────────────┼───────────────────────┼───────────────────────┤
+    │ 0              │ E                     │ A B C D E             │
+    ├────────────────┼───────────────────────┼───────────────────────┤
+    │ 1              │ F                     │ A B C D E F           │
+    ├────────────────┼───────────────────────┼───────────────────────┤
+    │ 2              │ G                     │ A B C D E F G         │
+    ├────────────────┼───────────────────────┼───────────────────────┤
+    │ 3              │ H                     │ A B C D E F G H       │
+    └────────────────┴───────────────────────┴───────────────────────┘
+
+    The model produces one logits row after each batch token.
+
+    Therefore:
+
+    ┌────────────┬─────────────────┬─────────────────────────────────┐
+    │ Logits row │ Comes after     │ Used for                        │
+    ├────────────┼─────────────────┼─────────────────────────────────┤
+    │ 0          │ A B C D E       │ verify proposed F               │
+    ├────────────┼─────────────────┼─────────────────────────────────┤
+    │ 1          │ A B C D E F     │ verify proposed G               │
+    ├────────────┼─────────────────┼─────────────────────────────────┤
+    │ 2          │ A B C D E F G   │ verify proposed H               │
+    ├────────────┼─────────────────┼─────────────────────────────────┤
+    │ 3          │ A B C D E F G H │ generate a possible bonus token │
+    └────────────┴─────────────────┴─────────────────────────────────┘
+
+    The main performance opportunity → one target call can potentially produce several output tokens.
+
+```
+7. Verification happens from left to right and stops at the first mismatch.
+8.
+```
+    sample_and_accept()
+
+        for each draft position:
+          select target token from corresponding target logits;
+          if target token matches draft token:
+              continue;
+          else:
+              return immediately;
+
+    For our draft:
+
+        draft[0] = F
+        draft[1] = G
+        draft[2] = H
+    
+    the function does:
+    
+        target row 0 versus F
+        target row 1 versus G
+        target row 2 versus H
+    
+    There are three important outcomes.
+
+    [A] rejection at the first token
+        The draft proposes:
+
+            F G H
+            
+        But the target says:
+            
+            row 0 → X
+            
+        So:
+            
+            target X != draft F
+            
+        The verifier stops immediately.
+            
+        The output of this round is:
+            
+            X
+            
+        The other draft tokens are unusable:
+            
+            F rejected
+            G invalid because it assumed F
+            H invalid because it assumed F and G
+
+        Thus:
+            accepted draft tokens: none
+            target correction:     X
+
+        The ordinary target-only AR model would also have generated X after A B C D E, so correctness is preserved.
+
+    [B] some drafts match, then rejection
+        Suppose:
+
+            draft proposal: F G H
+            target choices: F G X
+
+        Verification proceeds:
+
+            position 0:
+                draft = F
+                target = F
+                match
+
+            position 1:
+                draft = G
+                target = G
+                match
+
+            position 2:
+                draft = H
+                target = X
+                MISMATCH!!!
+
+        The output of this round is:
+
+            F G X
+
+        Thus:
+            F = accepted draft
+            G = accepted draft
+            X = target correction replacing H
+        
+    [C] every draft matches
+        Suppose:
+
+            draft proposal: F G H
+            target choices: F G H
+
+        All three proposals are accepted.
+
+        The target forward pass also produced row 3:
+
+            logits after H
+
+        Spectre can use that row to select the next target token:
+
+            row 3 → I
+
+        The complete output of the round becomes:
+
+            F G H I
+
+        F = accepted draft
+        G = accepted draft
+        H = accepted draft
+        I = target bonus token
+
+        `I` is called a bonus because its logits were already calculated by the verification
+        forward pass. No additional target forward pass is needed to select it.
+```
+9.
+```
+    Why `accepted.size() - 1` ?
+
+        The return vector always has this structure:
+
+            zero or more accepted drafts
+                        +
+            one final target token
+
+        The final target token is either:
+
+            a correction
+
+                or:
+
+            a bonus
+```
+10.
+```
+The draft model sequentially proposes k tokens.
+The target model evaluates the pending token and all k proposals in one batched forward pass.
+The program compares each proposal with the target’s corresponding choice.
+It retains the matching prefix, and at the first mismatch uses the target’s choice instead.
+```
+11.
+```
+    Assume:
+    
+        accepted history    :   A B C D E
+        draft length        :       3
+    
+    Draft-model work
+
+        the ordinary draft model performs approximately three sequential one-token forward passes.
+
+        decode E → propose F
+        decode F → propose G
+        decode G → propose H
+
+    Target-model work
+
+        it does NOT perform three separate target calls
+
+        It receives one batch:
+
+            [E, F, G, H]
+
+        and performs one batched forward pass:
+
+        That one call produces four logits rows:
+
+            after E → target choice for F's position
+            after F → target choice for G's position
+            after G → target choice for H's position
+            after H → possible bonus token
+
+    So the distinction is:
+
+        Draft:
+            several sequential calls to a cheap model
+
+        Target:
+            one batched call evaluating several positions
+        
+    The performance advantage comes from batching
+```
+12.
+```
+    A simplified cost comparison is:
+    
+    ordinary AR:
+        4 sequential expensive target calls
+
+    speculation, if all three drafts match:
+        3 sequential cheap draft calls
+        + 1 batched expensive target call
+```
+13.
+```
+    The speculative round can emit:
+    
+        F G H + one bonus token
+
+```
+14. If proposals are frequently rejected, some batched target computation is wasted and the benefit decreases.
+15.
+```
+    There are two executions being compared.
+
+    Ordinary target-only AR
+
+        decode E
+        target selects F
+        decode F
+        target selects G
+        decode G
+        target selects X
+
+    Batched speculative verification
+
+        target evaluates [E, F, G, H] once
+        row after E selects F
+        row after F selects G
+        row after G selects X
+```
+16. Why do the batched rows match ordinary AR? Because of causal attention.
+17.
+```
+    This resembles speculative CPU execution:
+
+        predict a path
+        execute work on that path
+        retire valid results in order
+        discard work after a misprediction
+```
+18.
+```
+    The general correctness argument
+    
+    Start with the same accepted prefix for ordinary AR and speculation.
+    
+    For every draft proposal:
+    
+        1. If it equals the target’s next token, appending it produces the same prefix as ordinary target-only generation.
+        2. At the first mismatch, emit the target’s next token instead, again producing the same prefix as ordinary target-only
+           generation.
+        3. Start the next round from that identical prefix.
+    
+    By repeating this argument, greedy speculative decoding produces the same token sequence as greedy target-only AR.
+```
+19.
+```
+    There are two related but distinct guarantees.
+
+    Greedy exact-match speculation
+
+        draft token == target argmax → accept
+        otherwise → emit target argmax
+
+        Guarantee:
+
+            the speculative token sequence is identical to target-only greedy decoding
+
+    Canonical stochastic speculative sampling
+
+        Leviathan’s stochastic algorithm works with:
+
+            p(x) = target probability
+            q(x) = draft probability
+
+        A proposal is accepted with probability:
+
+            min(1, p(x) / q(x))
+
+        If rejected, the replacement is sampled from a corrected residual distribution based on:
+
+            max(0, p(x) - q(x))
+
+        Its guarantee is different:
+
+            the speculative output has the same probability distribution as target-only sampling
+
+        It does not necessarily produce the exact same token sequence as a separate target-only
+        run with an informally “same” seed, because the two procedures consume randomness differently.
+```
+20. speculative decoding performs roughly fixed work per round, while acceptance determines how many useful tokens that work yields.
+21.
+```
+    Modern LLMs use an algorithm called Byte Pair Encoding (BPE).
+
+    This splits text into tiny fragments (prefixes, suffixes, syllables, and single letters)
+    so that the model can handle any sequence of characters ever written, including typos,
+    made-up words, code, and slurs, without needing an infinitely large dictionary.
+```
