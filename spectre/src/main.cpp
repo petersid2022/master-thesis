@@ -1031,9 +1031,9 @@ private:
           proposal_tokens = draft_using_draft_model();
         }
 
-        if (proposal_tokens.size() > (std::size_t)params.max_tokens_to_draft) {
-          proposal_tokens.resize((std::size_t)params.max_tokens_to_draft);
-        } else if (proposal_tokens.size() < (std::size_t)params.min_tokens_to_draft) {
+        if (proposal_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
+          proposal_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
+        } else if (proposal_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
           proposal_tokens.clear();
         }
 
@@ -1042,7 +1042,7 @@ private:
 
         // add pending_token to the batch we send to target
         create_new_batch(speculative_batch_target,
-                         (int32_t)llama_n_batch(ctx_target.get()), /* batch capacity */
+                         static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
                          pending_token,
                          next_target_position);
 
@@ -1051,7 +1051,7 @@ private:
         // add drafted tokens to the target
         for (std::size_t i = 0; i < proposal_tokens.size(); ++i) {
           create_new_batch(speculative_batch_target,
-                           (int32_t)llama_n_batch(ctx_target.get()), /* batch capacity */
+                           static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
                            proposal_tokens[i],
                            next_target_position + (llama_pos)i);
         }
@@ -1181,7 +1181,8 @@ private:
       const int64_t t_end = ggml_time_us();
       const double prompt_ms = static_cast<double>(time_after_prompt - start_time) / 1000.0;
       const double decode_ms = static_cast<double>(t_end - time_after_prompt) / 1000.0;
-      const float speed = static_cast<float>(tokens_generated_in_round) / std::max((float)(decode_ms / 1000.0), 1e-6f);
+      const float speed = static_cast<float>(tokens_generated_in_round) /
+                          std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
 
       print(GGML_LOG_LEVEL_INFO,
             "decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
@@ -1198,7 +1199,7 @@ private:
               100.0 * static_cast<double>(params.tokens_accepted_count) / static_cast<double>(params.tokens_drafted_count));
       }
 
-      recorder.finalize((int64_t)tokens_generated_in_round,
+      recorder.finalize(static_cast<int64_t>(tokens_generated_in_round),
                         params.tokens_drafted_count,
                         params.tokens_accepted_count,
                         bonus_tokens_drafted_in_round,
@@ -1279,7 +1280,8 @@ private:
                                  ? static_cast<double>(t_end - time_after_prompt) / 1000.0
                                  : static_cast<double>(t_end - start_time) / 1000.0;
 
-    const float speed = static_cast<float>(tokens_generated_in_round) / std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
+    const float speed = static_cast<float>(tokens_generated_in_round) /
+                        std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
 
     print(GGML_LOG_LEVEL_INFO,
           "decoded {} tokens in {:.3f} s,"
@@ -1290,12 +1292,12 @@ private:
           prompt_ms,
           decode_ms);
 
-    recorder.finalize((int64_t)tokens_generated_in_round, /* tokens_generated_in_round */
-                      0,                                  /* tokens_drafted_count */
-                      0,                                  /* drafts_accepted_count */
-                      0,                                  /* bonus_tokens_drafted_in_round */
-                      prompt_ms,                          /* prompt_ms */
-                      decode_ms                           /* decode_ms */
+    recorder.finalize(static_cast<int64_t>(tokens_generated_in_round), /* tokens_generated_in_round */
+                      0,                                               /* tokens_drafted_count */
+                      0,                                               /* drafts_accepted_count */
+                      0,                                               /* bonus_tokens_drafted_in_round */
+                      prompt_ms,                                       /* prompt_ms */
+                      decode_ms                                        /* decode_ms */
     );
 
     print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
@@ -1336,7 +1338,7 @@ private:
 
     for (std::size_t index = 0; index < proposes.size(); ++index) {
       // given the current logits, pick a token using the sampler (greedy or stochastic)
-      const llama_token accepted_token = llama_sampler_sample(sampler, ctx, (int32_t)index);
+      const llama_token accepted_token = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(index));
 
       // that token is now part of the sequence
       tokens.push_back(accepted_token);
@@ -1350,7 +1352,7 @@ private:
     // * after all N proposals match, logits at index N predict the token after the final proposal
     // * sampling it gives the free (no additional target-model forward pass) bonus token
     //   from the same target-model decode.
-    const llama_token id = llama_sampler_sample(sampler, ctx, (int32_t)proposes.size());
+    const llama_token id = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(proposes.size()));
     tokens.push_back(id);
 
     return tokens;
@@ -1374,20 +1376,28 @@ private:
   //
   std::vector<llama_token> draft_using_ngram() {
     const auto &tokens = tokens_already_in_target_kv;
-    const llama_token sampled = pending_token;
-    const std::size_t N = (std::size_t)params.n_gram_size;
-    const std::size_t M = (std::size_t)params.m_gram_size;
-    const std::size_t cur_len = tokens.size();
+    const llama_token sampled = pending_token; // sampled but not decoded
+
+    const std::size_t length = tokens.size();
+    const std::size_t N = static_cast<std::size_t>(params.n_gram_size);
+    const std::size_t M = static_cast<std::size_t>(params.m_gram_size);
+
     std::vector<llama_token> result;
-    if (cur_len <= N + M + 1) return result;
+    if (length <= N + M + 1) {
+      return result;
+    }
+
     std::vector<llama_token> pattern;
     pattern.reserve(N);
-    for (std::size_t j = cur_len - N + 1; j < cur_len; ++j) {
+
+    for (std::size_t j = length - N + 1; j < length; ++j) {
       pattern.push_back(tokens[j]);
     }
+
     pattern.push_back(sampled);
+
     std::size_t match_pos = 0;
-    for (std::size_t j = cur_len - N - 1; j > 0; --j) {
+    for (std::size_t j = length - N - 1; j > 0; --j) {
       bool match = true;
       for (std::size_t k = 0; k < pattern.size(); ++k) {
         if (tokens[j + k] != pattern[k]) {
@@ -1400,14 +1410,24 @@ private:
         break;
       }
     }
-    if (match_pos == 0) return result;
-    const std::size_t copy_max = std::min(M, cur_len - (match_pos + N));
-    if (copy_max < N) return result;
+
+    if (match_pos == 0) {
+      return result;
+    }
+
+    const std::size_t copy_max = std::min(M, length - (match_pos + N));
+    if (copy_max < N) {
+      return result;
+    }
+
     result.reserve(copy_max);
+
     for (std::size_t j = 0; j < copy_max; ++j) {
       result.push_back(tokens[match_pos + N + j]);
     }
+
     last_draft_probabilities.assign(result.size(), std::numeric_limits<double>::quiet_NaN());
+
     return result;
   }
 
@@ -1416,7 +1436,7 @@ private:
 
     const auto draft_kv_cache_len = [&]() -> std::size_t {
       const llama_pos max_cached_pos = llama_memory_seq_pos_max(mem_draft, 0);
-      return max_cached_pos < 0 ? 0 : (std::size_t)(max_cached_pos + 1);
+      return max_cached_pos < 0 ? 0 : static_cast<std::size_t>(max_cached_pos + 1);
     };
 
     // the draft-side token mirror must track KV exactly
@@ -1438,7 +1458,7 @@ private:
     //   tokens waiting to be drafted  [32]
     //
     const uint32_t draft_n_ctx_u = llama_n_ctx(ctx_draft.get());
-    if (params.max_tokens_to_draft >= (int64_t)draft_n_ctx_u) {
+    if (params.max_tokens_to_draft >= static_cast<int64_t>(draft_n_ctx_u)) {
       throw std::runtime_error(std::format("draft n_max ({}) must be less than draft model context size ({})", params.max_tokens_to_draft, draft_n_ctx_u));
     }
     const int n_ctx = static_cast<int>(draft_n_ctx_u - params.max_tokens_to_draft);
@@ -1467,7 +1487,7 @@ private:
     }
 
     std::vector<llama_token> result;
-    result.reserve((std::size_t)params.max_tokens_to_draft); // n_max tokens to be drafted at a time
+    result.reserve(static_cast<std::size_t>(params.max_tokens_to_draft)); // n_max tokens to be drafted at a time
 
     if (reuse_n == 0) {
       // nothing to be reused
