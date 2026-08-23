@@ -90,6 +90,11 @@ static inline void print(enum ggml_log_level level, std::string_view fmt, const 
   }
 }
 
+template <typename... Args>
+static inline void print(std::string_view fmt, const Args &...args) {
+  print(GGML_LOG_LEVEL_INFO, fmt, args...);
+}
+
 struct LlamaModelDeleter {
   void operator()(llama_model *m) {
     if (m) llama_model_free(m);
