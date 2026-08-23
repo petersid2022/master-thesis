@@ -17,20 +17,64 @@
 
 #include "llama-cpp.h"
 
-static inline const char *log_level_to_string(enum ggml_log_level level) {
+class TerminalColor {
+  const char *code;
+
+  static bool should_color() {
+    static const bool is_terminal = isatty(fileno(stdout));
+    return is_terminal;
+  }
+
+public:
+  constexpr explicit TerminalColor(const char *ansi) : code(ansi) {}
+
+  friend std::ostream &operator<<(std::ostream &os, const TerminalColor &tc) {
+    if (isatty(fileno(stdout))) {
+      os << tc.code;
+    }
+    return os;
+  }
+
+  template <typename... Args>
+  std::string operator()(Args &&...args) const {
+    std::ostringstream out;
+
+    if (should_color()) {
+      out << code;
+      ((out << std::forward<Args>(args)), ...);
+      out << "\033[0m";
+    } else {
+      ((out << std::forward<Args>(args)), ...);
+    }
+
+    return out.str();
+  }
+};
+
+namespace Color {
+inline constexpr TerminalColor Red("\033[31m");
+inline constexpr TerminalColor Green("\033[32m");
+inline constexpr TerminalColor Yellow("\033[33m");
+inline constexpr TerminalColor Blue("\033[34m");
+inline constexpr TerminalColor Reset("\033[0m");
+} // namespace Color
+
+static inline std::string log_level_to_string(enum ggml_log_level level) {
+  using namespace Color;
+
   switch (level) {
   case GGML_LOG_LEVEL_DEBUG:
-    return "[DEBUG] ";
+    return Green("[DEBUG] ");
   case GGML_LOG_LEVEL_CONT:
   case GGML_LOG_LEVEL_INFO:
-    return "[INFO] ";
+    return Blue("[INFO] ");
   case GGML_LOG_LEVEL_WARN:
-    return "[WARN] ";
+    return Yellow("[WARN] ");
   case GGML_LOG_LEVEL_ERROR:
-    return "[ERROR] ";
+    return Red("[ERROR] ");
   case GGML_LOG_LEVEL_NONE:
   default:
-    return "";
+    return Reset("");
   }
 }
 
