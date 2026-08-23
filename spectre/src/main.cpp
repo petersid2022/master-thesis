@@ -11,8 +11,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "llama-cpp.h"
@@ -29,7 +31,7 @@ public:
   constexpr explicit TerminalColor(const char *ansi) : code(ansi) {}
 
   friend std::ostream &operator<<(std::ostream &os, const TerminalColor &tc) {
-    if (isatty(fileno(stdout))) {
+    if (should_color()) {
       os << tc.code;
     }
     return os;
@@ -113,12 +115,6 @@ struct LlamaSamplerDeleter {
   }
 };
 
-struct LlamaBatchDeleter {
-  void operator()(llama_batch *b) {
-    if (b) llama_batch_free(*b);
-  }
-};
-
 struct Parameters {
   // the number of layers to store in VRAM (<0 means all layers)
   int32_t gpu_layers = -1;
@@ -192,11 +188,8 @@ struct Parameters {
   std::string draft_model_path;
   std::string target_model_path;
 
-  bool draft_speculative_decoding_is_enabled() {
-    if (!draft_model_path.empty()) {
-      return true;
-    }
-    return false;
+  bool draft_speculative_decoding_is_enabled() const {
+    return !draft_model_path.empty();
   }
 };
 
@@ -244,7 +237,7 @@ public:
                     double logprob) {
 
     tokens << step << ',' << call << ',' << source << ','
-           << position_in_draft.value_or(0) << ',' << token_id << ','
+           << position_in_draft.value_or(-1) << ',' << token_id << ','
            << fmt_double(p_target) << ','
            << fmt_double(p_draft) << ','
            << fmt_double(logit) << ','
@@ -361,7 +354,7 @@ private:
       if (i > 0) m << ",";
       m << "\n    {\"n_drafted\": " << r.tokens_drafted_this_round
         << ", \"n_accepted_drafts\": " << r.drafts_accepted_this_round
-        << ", \"rejected_proposal_index\": " << r.rejected_proposal_index.value() << "}";
+        << ", \"rejected_proposal_index\": " << r.rejected_proposal_index.value_or(-1) << "}";
     }
     if (!rounds.empty()) m << "\n  ";
     m << "]\n";
@@ -643,10 +636,12 @@ private:
   // --------------------------------------------------------------------
 
   // token that's accepted but not yet in the target kv cache
-  llama_token pending_token;
+  llama_token pending_token = 0;
 
   std::vector<llama_token> tokens_already_in_target_kv;
-  std::vector<llama_token> tokens_in_limbo;
+
+  // what tokens currently sit in the draft KV cache
+  std::vector<llama_token> tokens_in_draft_kv;
 
   std::unique_ptr<llama_model, LlamaModelDeleter> model_weights_target;
   std::unique_ptr<llama_model, LlamaModelDeleter> model_weights_draft;
@@ -741,86 +736,82 @@ private:
     return std::make_tuple(logit, prob);
   }
 
-  void initialize_llama_context(void) {
-    try {
-      auto logger = [](ggml_log_level level, const char *text, void *) {
-        std::cout << log_level_to_string(level) << text << std::flush;
-      };
+  void load_models(void) {
+    auto logger = [](ggml_log_level level, const char *text, void *) {
+      std::cout << log_level_to_string(level) << text << std::flush;
+    };
 
-      llama_log_set(logger, nullptr);
+    llama_log_set(logger, nullptr);
 
-      llama_backend_init();
+    llama_backend_init();
 
-      print(GGML_LOG_LEVEL_INFO, "llama_print_system_info:       {}", llama_print_system_info());
-      print(GGML_LOG_LEVEL_INFO, "llama_supports_mmap:           {}", llama_supports_mmap());
-      print(GGML_LOG_LEVEL_INFO, "llama_supports_mlock:          {}", llama_supports_mlock());
-      print(GGML_LOG_LEVEL_INFO, "llama_supports_gpu_offload:    {}", llama_supports_gpu_offload());
+    print("llama_print_system_info:       {}", llama_print_system_info());
+    print("llama_supports_mmap:           {}", llama_supports_mmap());
+    print("llama_supports_mlock:          {}", llama_supports_mlock());
+    print("llama_supports_gpu_offload:    {}", llama_supports_gpu_offload());
 
-      struct llama_model_params model_params = llama_model_default_params();
+    struct llama_model_params model_params = llama_model_default_params();
 
 #if 0
       ggml_backend_dev_t model_backend = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
       model_params.devices = &model_backend;
 #endif
 
-      model_params.n_gpu_layers = params.gpu_layers;
-      model_params.load_mode = llama_supports_mmap()
-                                   ? LLAMA_LOAD_MODE_MMAP
-                                   : LLAMA_LOAD_MODE_NONE;
+    model_params.n_gpu_layers = params.gpu_layers;
+    model_params.load_mode = llama_supports_mmap()
+                                 ? LLAMA_LOAD_MODE_MMAP
+                                 : LLAMA_LOAD_MODE_NONE;
 
-      model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), model_params));
-      if (!model_weights_target) {
-        throw std::runtime_error("failed to load target model");
+    model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), model_params));
+    if (!model_weights_target) {
+      throw std::runtime_error("failed to load target model");
+    }
+
+    if (params.draft_speculative_decoding_is_enabled()) {
+      model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), model_params));
+      if (!model_weights_draft) {
+        throw std::runtime_error("failed to load draft model");
       }
+    }
 
-      if (params.draft_speculative_decoding_is_enabled()) {
-        model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), model_params));
-        if (!model_weights_draft) {
-          throw std::runtime_error("failed to load draft model");
-        }
+    print("target_llama_model_n_params:    {}", llama_model_n_params(model_weights_target.get()));
+    if (params.draft_speculative_decoding_is_enabled()) {
+      print("draft_llama_model_n_params:    {}", llama_model_n_params(model_weights_draft.get()));
+    }
+
+    struct llama_context_params ctx_params = llama_context_default_params();
+
+    ctx_params.no_perf = false;
+    ctx_params.n_ctx = params.context_size;
+
+    ctx_target.reset(llama_init_from_model(model_weights_target.get(), ctx_params));
+    if (!ctx_target) {
+      throw std::runtime_error("failed to create the llama_context for target");
+    }
+
+    if (params.draft_speculative_decoding_is_enabled()) {
+      ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), ctx_params));
+      if (!ctx_draft) {
+        throw std::runtime_error("failed to create the llama_context for draft");
       }
+    }
 
-      print(GGML_LOG_LEVEL_INFO, "target_llama_model_n_params:    {}", llama_model_n_params(model_weights_target.get()));
-      if (params.draft_speculative_decoding_is_enabled()) {
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_model_n_params:    {}", llama_model_n_params(model_weights_draft.get()));
-      }
+    print("target_llama_n_ctx:        {}", llama_n_ctx(ctx_target.get()));
+    print("target_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_target.get()));
+    print("target_llama_n_batch:      {}", llama_n_batch(ctx_target.get()));
+    print("target_llama_n_ubatch:     {}", llama_n_ubatch(ctx_target.get()));
+    print("target_llama_n_seq_max:    {}", llama_n_seq_max(ctx_target.get()));
 
-      struct llama_context_params ctx_params = llama_context_default_params();
-
-      ctx_params.no_perf = false;
-      ctx_params.n_ctx = params.context_size;
-
-      ctx_target.reset(llama_init_from_model(model_weights_target.get(), ctx_params));
-      if (!ctx_target) {
-        throw std::runtime_error("failed to create the llama_context for target");
-      }
-
-      if (params.draft_speculative_decoding_is_enabled()) {
-        ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), ctx_params));
-        if (!ctx_draft) {
-          throw std::runtime_error("failed to create the llama_context for draft");
-        }
-      }
-
-      print(GGML_LOG_LEVEL_INFO, "target_llama_n_ctx:        {}", llama_n_ctx(ctx_target.get()));
-      print(GGML_LOG_LEVEL_INFO, "target_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_target.get()));
-      print(GGML_LOG_LEVEL_INFO, "target_llama_n_batch:      {}", llama_n_batch(ctx_target.get()));
-      print(GGML_LOG_LEVEL_INFO, "target_llama_n_ubatch:     {}", llama_n_ubatch(ctx_target.get()));
-      print(GGML_LOG_LEVEL_INFO, "target_llama_n_seq_max:    {}", llama_n_seq_max(ctx_target.get()));
-
-      if (params.draft_speculative_decoding_is_enabled()) {
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_n_ctx:        {}", llama_n_ctx(ctx_draft.get()));
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_draft.get()));
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_n_batch:      {}", llama_n_batch(ctx_draft.get()));
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_n_ubatch:     {}", llama_n_ubatch(ctx_draft.get()));
-        print(GGML_LOG_LEVEL_INFO, "draft_llama_n_seq_max:    {}", llama_n_seq_max(ctx_draft.get()));
-      }
-    } catch (...) {
-      throw;
+    if (params.draft_speculative_decoding_is_enabled()) {
+      print("draft_llama_n_ctx:        {}", llama_n_ctx(ctx_draft.get()));
+      print("draft_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_draft.get()));
+      print("draft_llama_n_batch:      {}", llama_n_batch(ctx_draft.get()));
+      print("draft_llama_n_ubatch:     {}", llama_n_ubatch(ctx_draft.get()));
+      print("draft_llama_n_seq_max:    {}", llama_n_seq_max(ctx_draft.get()));
     }
   }
 
-  void tokenize_and_validate_prompt(void) {
+  void prepare_prompt(void) {
     vocabulary_target = llama_model_get_vocab(model_weights_target.get());
 
     if (params.draft_speculative_decoding_is_enabled()) {
@@ -854,7 +845,7 @@ private:
       throw std::runtime_error(std::format("failed to tokenize prompt (n = {})", n));
     }
 
-    print(GGML_LOG_LEVEL_INFO, "\"{}\" ({} tokens)", params.prompt.c_str(), prompt_target_len);
+    print("\"{}\" ({} tokens)", params.prompt.c_str(), prompt_target_len);
 
     // if context size < kv cache size then we've got a problem
     if (llama_n_ctx(ctx_target.get()) < (uint32_t)tokens_already_in_target_kv.size()) {
@@ -920,21 +911,21 @@ private:
     }
 
     for (auto id : tokens_already_in_target_kv) {
-      print(GGML_LOG_LEVEL_INFO, "|{}|", token_to_string(vocabulary_target, id).c_str());
+      print("|{}|", token_to_string(vocabulary_target, id).c_str());
     }
 
-    print(GGML_LOG_LEVEL_INFO, "llama_vocab_n_tokens:    {}", llama_vocab_n_tokens(vocabulary_target));
-    print(GGML_LOG_LEVEL_INFO, "llama_vocab_type:        {}", static_cast<int>(llama_vocab_type(vocabulary_target)));
+    print("llama_vocab_n_tokens:    {}", llama_vocab_n_tokens(vocabulary_target));
+    print("llama_vocab_type:        {}", static_cast<int>(llama_vocab_type(vocabulary_target)));
   }
 
-  void initialize_samplers_and_batches(void) {
+  void init_samplers(void) {
     struct llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
 
     sampler_params.no_perf = false;
 
     sampler_target.reset(llama_sampler_chain_init(sampler_params));
     if (!sampler_target) {
-      throw std::runtime_error("failed to create the llama_sampler_chain_params");
+      throw std::runtime_error("failed to create the sampler_params");
     }
 
     if (params.greedy) {
@@ -971,9 +962,8 @@ private:
     }
   }
 
-  void run_generation_and_benchmark(void) {
-    print(GGML_LOG_LEVEL_INFO,
-          "llama_model_chat_template:\n{}",
+  void generate(void) {
+    print("llama_model_chat_template:\n{}",
           llama_model_chat_template(model_weights_target.get(), nullptr));
 
     // auto-generate a run-id if none was supplied
@@ -985,7 +975,7 @@ private:
 
     RunRecorder recorder(params.results_dir, params.run_id, RunRecorder::iso_timestamp(), params);
 
-    print(GGML_LOG_LEVEL_INFO, "writing structured run output to: {}", recorder.dir().string());
+    print("writing structured run output to: {}", recorder.dir().string());
 
     llama_synchronize(ctx_target.get());
     if (params.draft_speculative_decoding_is_enabled()) {
@@ -1046,15 +1036,15 @@ private:
     int bonus_tokens_drafted_in_round = 0;
 
     if (params.draft_speculative_decoding_is_enabled()) {
-      print(GGML_LOG_LEVEL_INFO, "speculative decoding using a draft model is enabled");
+      print("speculative decoding using a draft model is enabled");
 
       {
         std::array<char, 1024> buf{};
         llama_model_desc(model_weights_target.get(), buf.data(), buf.size());
-        print(GGML_LOG_LEVEL_INFO, "target_model :    {}", buf.data());
+        print("target_model :    {}", buf.data());
 
         llama_model_desc(model_weights_draft.get(), buf.data(), buf.size());
-        print(GGML_LOG_LEVEL_INFO, "draft_model  :    {}", buf.data());
+        print("draft_model  :    {}", buf.data());
       }
 
       while (!params.has_encountered_eos) {
@@ -1105,7 +1095,9 @@ private:
                            next_target_position + (llama_pos)i);
         }
 
+        //
         // evaluate the batch => update KV cache and compute logits for the batch
+        //
         if (llama_decode(ctx_target.get(), speculative_batch_target)) {
           throw std::runtime_error("target speculative verification decode failed");
         }
@@ -1208,8 +1200,7 @@ private:
           const std::size_t visible = token.size() + 2; // 2 chars for the surrounding '|'
           const std::string pad(visible < col ? col - visible : 1, ' ');
 
-          print(GGML_LOG_LEVEL_INFO,
-                "\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
+          print("\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
                 color, token, pad,
                 static_cast<int>(accepted.size() - 1),
                 static_cast<int>(proposal_tokens.size()),
@@ -1233,8 +1224,7 @@ private:
       const float speed = static_cast<float>(tokens_generated_in_round) /
                           std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
 
-      print(GGML_LOG_LEVEL_INFO,
-            "decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
+      print("decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
             tokens_generated_in_round,
             decode_ms / 1000.0,
             speed,
@@ -1242,8 +1232,7 @@ private:
             decode_ms);
 
       if (params.tokens_drafted_count > 0) {
-        print(GGML_LOG_LEVEL_INFO,
-              "speculative: n_drafted = {}, n_accept = {}, accept = {:.2f}%",
+        print("speculative: n_drafted = {}, n_accept = {}, accept = {:.2f}%",
               params.tokens_drafted_count, params.tokens_accepted_count,
               100.0 * static_cast<double>(params.tokens_accepted_count) / static_cast<double>(params.tokens_drafted_count));
       }
@@ -1255,7 +1244,7 @@ private:
                         prompt_ms,
                         decode_ms);
 
-      print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
+      print("wrote {} and {}",
             (recorder.dir() / "meta.json").string(),
             (recorder.dir() / "tokens.csv").string());
 
@@ -1271,7 +1260,9 @@ private:
     // --------------
 
     for (;;) {
+      //
       // evaluate the batch => update KV cache and compute logits for the batch
+      //
       if (llama_decode(ctx_target.get(), batch)) {
         throw std::runtime_error("failed to eval");
       }
@@ -1332,8 +1323,7 @@ private:
     const float speed = static_cast<float>(tokens_generated_in_round) /
                         std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
 
-    print(GGML_LOG_LEVEL_INFO,
-          "decoded {} tokens in {:.3f} s,"
+    print("decoded {} tokens in {:.3f} s,"
           "speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
           tokens_generated_in_round,
           decode_ms / 1000.0,
@@ -1349,7 +1339,7 @@ private:
                       decode_ms                                        /* decode_ms */
     );
 
-    print(GGML_LOG_LEVEL_INFO, "wrote {} and {}",
+    print("wrote {} and {}",
           (recorder.dir() / "meta.json").string(),
           (recorder.dir() / "tokens.csv").string());
 
@@ -1480,6 +1470,9 @@ private:
     return result;
   }
 
+  //
+  // propose new tokens using a secondary smaller model
+  //
   std::vector<llama_token> draft_using_draft_model(void) {
     llama_memory_t mem_draft = llama_get_memory(ctx_draft.get());
 
@@ -1489,95 +1482,126 @@ private:
     };
 
     // the draft-side token mirror must track KV exactly
-    if (draft_kv_cache_len() != tokens_in_limbo.size()) {
-      print(GGML_LOG_LEVEL_WARN, "draft(): KV/token mirror drift detected (kv_len={}, prompt_draft={}) - resyncing draft state", draft_kv_cache_len(), tokens_in_limbo.size());
+    if (draft_kv_cache_len() != tokens_in_draft_kv.size()) {
+      print(
+          GGML_LOG_LEVEL_WARN,
+          "draft(): KV/token mirror drift detected"
+          "(kv_len={}, prompt_draft={})",
+          draft_kv_cache_len(),
+          tokens_in_draft_kv.size());
+
+      print(GGML_LOG_LEVEL_WARN, "resyncing draft state");
+
       llama_memory_clear(mem_draft, false);
-      tokens_in_limbo.clear();
+      tokens_in_draft_kv.clear();
     }
 
-    int reuse_i = 0; // the index of the first token to be reused
-    int reuse_n = 0; // how much tokens can we reuse
+    int reuse_starting_from = 0; // the index of the first token to be reused
+    int reuse_count = 0;         // how much tokens can we reuse
 
     const std::vector<llama_token> &current_prompt = tokens_already_in_target_kv;
 
+    //
     //   context size of draft model   [48]
     // - max tokens to draft at a time [16]
     // ____________________________________
     //
     //   tokens waiting to be drafted  [32]
     //
-    const uint32_t draft_n_ctx_u = llama_n_ctx(ctx_draft.get());
-    if (params.max_tokens_to_draft >= static_cast<int64_t>(draft_n_ctx_u)) {
-      throw std::runtime_error(std::format("draft n_max ({}) must be less than draft model context size ({})", params.max_tokens_to_draft, draft_n_ctx_u));
+    const uint32_t draft_context_size_capacity = llama_n_ctx(ctx_draft.get());
+
+    if (params.max_tokens_to_draft >= static_cast<int64_t>(draft_context_size_capacity)) {
+      throw std::runtime_error(
+          std::format("draft n_max ({}) must be less "
+                      "than draft model context size ({})",
+                      params.max_tokens_to_draft,
+                      draft_context_size_capacity));
     }
-    const int n_ctx = static_cast<int>(draft_n_ctx_u - params.max_tokens_to_draft);
+
+    const int tokens_queued_to_be_drafted = static_cast<int>(draft_context_size_capacity - params.max_tokens_to_draft);
 
     const int current_prompt_len = static_cast<int>(current_prompt.size());
-    const int prompt_draft_len = static_cast<int>(tokens_in_limbo.size());
+    const int prompt_draft_len = static_cast<int>(tokens_in_draft_kv.size());
 
     // the index of the first token waiting to be drafted
-    const int i_start = std::max(0, current_prompt_len - n_ctx);
+    const int first_token = std::max(0, current_prompt_len - tokens_queued_to_be_drafted);
 
     // reuse as much as possible from the old draft context
     // ideally, the draft context should be as big as the target context
     // and we will always reuse the entire prompt
     for (int i = 0; i < prompt_draft_len; ++i) {
       int cursor = 0;
+
       const int max_draft_cursor = prompt_draft_len - i;
-      const int max_prompt_cursor = current_prompt_len - i_start;
+      const int max_prompt_cursor = current_prompt_len - first_token;
       const int max_cursor = std::min(max_prompt_cursor, max_draft_cursor);
-      while (cursor < max_cursor && current_prompt[static_cast<size_t>(i_start + cursor)] == tokens_in_limbo[static_cast<size_t>(i + cursor)]) {
+
+      while (cursor < max_cursor &&
+             current_prompt[static_cast<size_t>(first_token + cursor)] == tokens_in_draft_kv[static_cast<size_t>(i + cursor)]) {
         cursor++;
       }
-      if ((cursor >= 256 || n_ctx >= current_prompt_len) && cursor > reuse_n) {
-        reuse_i = i;
-        reuse_n = cursor;
+
+      if ((cursor >= 256 || tokens_queued_to_be_drafted >= current_prompt_len) && cursor > reuse_count) {
+        reuse_starting_from = i;
+        reuse_count = cursor;
       }
     }
 
     std::vector<llama_token> result;
     result.reserve(static_cast<std::size_t>(params.max_tokens_to_draft)); // n_max tokens to be drafted at a time
 
-    if (reuse_n == 0) {
+    if (reuse_count == 0) {
       // nothing to be reused
       llama_memory_clear(mem_draft, false);
-      tokens_in_limbo.clear();
+      tokens_in_draft_kv.clear();
     } else {
       // this happens when a previous draft has been discarded (for example, due to being too small),
       // but the target model agreed with it. in this case, we simply pass back the previous results
       // to save compute
-      if (reuse_i + reuse_n < prompt_draft_len && tokens_in_limbo[(std::size_t)(reuse_i + reuse_n)] == pending_token) {
-        for (int i = reuse_i + reuse_n + 1; i < prompt_draft_len; ++i) {
-          result.push_back(tokens_in_limbo[(std::size_t)i]);
+      if (reuse_starting_from + reuse_count < prompt_draft_len &&
+          tokens_in_draft_kv[(std::size_t)(reuse_starting_from + reuse_count)] == pending_token) {
+
+        for (int i = reuse_starting_from + reuse_count + 1; i < prompt_draft_len; ++i) {
+          result.push_back(tokens_in_draft_kv[static_cast<std::size_t>(i)]);
+
           if (params.max_tokens_to_draft <= static_cast<int>(result.size())) {
             break;
           }
         }
+
         return result;
       }
 
-      if (reuse_i > 0) {
-        llama_memory_seq_rm(mem_draft, 0, 0, reuse_i);
-        llama_memory_seq_add(mem_draft, 0, reuse_i, -1, -reuse_i);
-        tokens_in_limbo.erase(tokens_in_limbo.begin(), tokens_in_limbo.begin() + reuse_i);
+      // skip re-evaluating a prefix the draft already computed
+
+      if (reuse_starting_from > 0) {
+        // drop the unused prefix by deleting [0, reuse_starting_from)
+        llama_memory_seq_rm(mem_draft, 0, 0, reuse_starting_from);
+
+        // then slide the rest to position 0
+        llama_memory_seq_add(mem_draft, 0, reuse_starting_from, -1, -reuse_starting_from);
+
+        tokens_in_draft_kv.erase(tokens_in_draft_kv.begin(), tokens_in_draft_kv.begin() + reuse_starting_from);
       }
 
-      if (reuse_n < prompt_draft_len) {
-        llama_memory_seq_rm(mem_draft, 0, reuse_n, -1);
-        tokens_in_limbo.erase(tokens_in_limbo.begin() + reuse_n, tokens_in_limbo.end());
+      if (reuse_count < prompt_draft_len) {
+        llama_memory_seq_rm(mem_draft, 0, reuse_count, -1);
+        tokens_in_draft_kv.erase(tokens_in_draft_kv.begin() + reuse_count, tokens_in_draft_kv.end());
       }
     }
 
     // clean slate
     reset_batch(speculative_batch_draft);
 
-    const int32_t draft_batch_cap = (int32_t)llama_n_batch(ctx_draft.get());
-    llama_pos next_pos = (llama_pos)draft_kv_cache_len();
-    for (std::size_t i = (std::size_t)i_start + (std::size_t)reuse_n; i < current_prompt.size(); ++i) {
-      create_new_batch(speculative_batch_draft, draft_batch_cap, current_prompt[i], next_pos, false);
+    const int32_t draft_batch_capacity = static_cast<int32_t>(llama_n_batch(ctx_draft.get()));
+    llama_pos next_position = static_cast<llama_pos>(draft_kv_cache_len());
+
+    for (std::size_t i = static_cast<std::size_t>(first_token + reuse_count); i < current_prompt.size(); ++i) {
+      create_new_batch(speculative_batch_draft, draft_batch_capacity, current_prompt[i], next_position, false);
+
       // update the draft prefix
-      tokens_in_limbo.push_back(current_prompt[i]);
-      next_pos += 1;
+      tokens_in_draft_kv.push_back(current_prompt[i]);
+      next_position += 1;
     }
 
     //
@@ -1587,7 +1611,9 @@ private:
     //
     {
       if (speculative_batch_draft.n_tokens > 0) {
+        //
         // evaluate the batch => update KV cache and compute logits for the batch
+        //
         if (llama_decode(ctx_draft.get(), speculative_batch_draft)) {
           throw std::runtime_error("draft model: failed to decode prompt window");
         }
@@ -1597,23 +1623,31 @@ private:
       reset_batch(speculative_batch_draft);
     }
 
-    // Position must come from KV, not prompt_draft.size(), to satisfy M-RoPE's X < Y
-    const llama_pos last_token_pos = (llama_pos)draft_kv_cache_len();
-    create_new_batch(speculative_batch_draft,
-                     draft_batch_cap,
-                     pending_token,
-                     last_token_pos,
-                     true);
+    // position must come from KV
+    const llama_pos last_token_pos = static_cast<llama_pos>(draft_kv_cache_len());
 
+    create_new_batch(speculative_batch_draft, /* batch */
+                     draft_batch_capacity,    /* max_tokens */
+                     pending_token,           /* id */
+                     last_token_pos,          /* pos */
+                     true                     /* output */
+    );
+
+    //
     // update the draft prefix with the pending_token
-    tokens_in_limbo.push_back(pending_token);
+    //
+    tokens_in_draft_kv.push_back(pending_token);
 
+    //
     // evaluate the batch => update KV cache and compute logits for the batch
+    //
     if (llama_decode(ctx_draft.get(), speculative_batch_draft)) {
       throw std::runtime_error("draft model: failed to decode last context token");
     }
 
+    //
     // clean up
+    //
     llama_sampler_reset(sampler_draft.get());
 
     last_draft_probabilities.clear();
@@ -1648,19 +1682,23 @@ private:
         break;
       }
 
-      const llama_pos draft_next_pos = (llama_pos)draft_kv_cache_len();
-      create_new_batch(speculative_batch_draft,
-                       draft_batch_cap,
-                       proposed_token,
-                       draft_next_pos,
-                       true);
+      const llama_pos draft_next_pos = static_cast<llama_pos>(draft_kv_cache_len());
 
+      create_new_batch(speculative_batch_draft, /* batch */
+                       draft_batch_capacity,    /* max_tokens */
+                       proposed_token,          /* id */
+                       draft_next_pos,          /* pos */
+                       true                     /* output */
+      );
+
+      //
       // evaluate the batch => update KV cache and compute logits for the batch
+      //
       if (llama_decode(ctx_draft.get(), speculative_batch_draft)) {
         break;
       }
 
-      tokens_in_limbo.push_back(proposed_token);
+      tokens_in_draft_kv.push_back(proposed_token);
     }
 
     return result;
@@ -1675,14 +1713,18 @@ public:
   Spectre(Spectre &&) = delete;
   Spectre &operator=(Spectre &&) = delete;
 
-  ~Spectre() { llama_backend_free(); }
+  ~Spectre() {
+    llama_batch_free(speculative_batch_target);
+    llama_batch_free(speculative_batch_draft);
+    llama_backend_free();
+  }
 
-  int run(void) {
-    initialize_llama_context();
-    tokenize_and_validate_prompt();
-    initialize_samplers_and_batches();
-    run_generation_and_benchmark();
-    return EXIT_SUCCESS;
+  int run() {
+    load_models();
+    prepare_prompt();
+    init_samplers();
+    generate();
+    return 0;
   }
 };
 
