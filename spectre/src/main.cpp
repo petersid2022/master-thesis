@@ -19,6 +19,10 @@
 
 #include "llama-cpp.h"
 
+/// ===========
+///  Utilities
+/// ===========
+
 class TerminalColor {
   const char *code;
 
@@ -80,6 +84,13 @@ static inline std::string log_level_to_string(enum ggml_log_level level) {
   }
 }
 
+class SpectreError : public std::runtime_error {
+public:
+  template <typename... Args>
+  explicit SpectreError(std::format_string<Args...> fmt, Args &&...args)
+      : std::runtime_error(std::format(fmt, std::forward<Args>(args)...)) {}
+};
+
 template <typename... Args>
 static inline void print(enum ggml_log_level level, std::string_view fmt, const Args &...args) {
   try {
@@ -115,7 +126,11 @@ struct LlamaSamplerDeleter {
   }
 };
 
-struct Parameters {
+/// =================
+///  Data Structures
+/// =================
+
+struct InferenceParameters {
   // the number of layers to store in VRAM (<0 means all layers)
   int32_t gpu_layers = -1;
 
@@ -193,18 +208,22 @@ struct Parameters {
   }
 };
 
-struct RoundSummary {
+struct VerificationResults {
+  std::vector<llama_token> accepted_drafts;
+};
+
+struct InferenceRoundSummary {
   int tokens_drafted_this_round = 0;
   int drafts_accepted_this_round = 0;
   std::optional<std::size_t> rejected_proposal_index = std::nullopt;
 };
 
-class RunRecorder {
+class InferenceRunRecorder {
 public:
-  RunRecorder(const std::string &results_dir,
-              const std::string &run_id,
-              const std::string &started_at_iso,
-              const Parameters &p)
+  InferenceRunRecorder(const std::string &results_dir,
+                       const std::string &run_id,
+                       const std::string &started_at_iso,
+                       const InferenceParameters &p)
       : run_dir(std::filesystem::path(results_dir) / run_id),
         run_id_(run_id),
         started_at_(started_at_iso),
@@ -213,7 +232,7 @@ public:
 
     tokens.open(run_dir / "tokens.csv");
     if (!tokens) {
-      throw std::runtime_error(std::format("failed to open {}", (run_dir / "tokens.csv").string()));
+      throw SpectreError("failed to open {}", (run_dir / "tokens.csv").string());
     }
     tokens << "step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob\n";
 
@@ -303,10 +322,10 @@ private:
 
     std::ofstream m(tmp_path);
     if (!m) {
-      throw std::runtime_error(std::format("failed to open {}", tmp_path.string()));
+      throw SpectreError("failed to open {}", tmp_path.string());
     }
 
-    const Parameters &p = params_snapshot_;
+    const InferenceParameters &p = params_snapshot_;
 
     const double total_ms = prompt_ms + decode_ms;
     const double accept_rate = tokens_drafted_count > 0 ? static_cast<double>(drafts_accepted_count) / static_cast<double>(tokens_drafted_count) : 0.0;
@@ -365,7 +384,7 @@ private:
     std::error_code ec;
     std::filesystem::rename(tmp_path, final_path, ec);
     if (ec) {
-      throw std::runtime_error(std::format("failed to rename {} -> {}: {}", tmp_path.string(), final_path.string(), ec.message()));
+      throw SpectreError("failed to rename {} -> {}: {}", tmp_path.string(), final_path.string(), ec.message());
     }
   }
 
@@ -408,22 +427,22 @@ private:
   std::filesystem::path run_dir;
   std::string run_id_;
   std::string started_at_;
-  Parameters params_snapshot_;
+  InferenceParameters params_snapshot_;
   std::ofstream tokens;
-  std::vector<RoundSummary> rounds;
+  std::vector<InferenceRoundSummary> rounds;
   int step = 0;
 };
 
 class SpectreConfig {
 private:
-  Parameters params;
+  InferenceParameters params;
 
   void print_usage(char *argv[]) const;
 
 public:
   static SpectreConfig from_args(int argc, char *argv[]);
 
-  const Parameters &parameters() const { return params; }
+  const InferenceParameters &parameters() const { return params; }
 };
 
 void SpectreConfig::print_usage(char *argv[]) const {
@@ -473,7 +492,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
 
 SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
   SpectreConfig config{};
-  Parameters &params = config.params;
+  InferenceParameters &params = config.params;
 
   for (int i = 1; i < argc; i++) {
     try {
@@ -485,49 +504,49 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
           params.target_model_path = argv[++i];
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for target model");
+          throw SpectreError("Missing argument for target model");
         }
       } else if (std::strcmp(argv[i], "--draft-model") == 0) {
         if (i + 1 < argc) {
           params.draft_model_path = argv[++i];
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for draft model");
+          throw SpectreError("Missing argument for draft model");
         }
       } else if (std::strcmp(argv[i], "--ctx-size") == 0) {
         if (i + 1 < argc) {
           params.context_size = (uint32_t)std::stoi(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for context size");
+          throw SpectreError("Missing argument for context size");
         }
       } else if (std::strcmp(argv[i], "--n-gpu-layers") == 0) {
         if (i + 1 < argc) {
           params.gpu_layers = std::stoi(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for n-gpu-layers");
+          throw SpectreError("Missing argument for n-gpu-layers");
         }
       } else if (std::strcmp(argv[i], "--prompt") == 0) {
         if (i + 1 < argc) {
           params.prompt = argv[++i];
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for prompt");
+          throw SpectreError("Missing argument for prompt");
         }
       } else if (std::strcmp(argv[i], "--temp") == 0) {
         if (i + 1 < argc) {
           params.temperature = std::stof(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for temperature");
+          throw SpectreError("Missing argument for temperature");
         }
       } else if (std::strcmp(argv[i], "--top-p") == 0) {
         if (i + 1 < argc) {
           params.top_p = std::stof(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for top-p");
+          throw SpectreError("Missing argument for top-p");
         }
       } else if (std::strcmp(argv[i], "--greedy") == 0) {
         params.greedy = true;
@@ -538,78 +557,81 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
           params.n_gram_size = std::stoi(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --n-gram-size");
+          throw SpectreError("Missing argument for --n-gram-size");
         }
       } else if (std::strcmp(argv[i], "--m-gram-size") == 0) {
         if (i + 1 < argc) {
           params.m_gram_size = std::stoi(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --m-gram-size");
+          throw SpectreError("Missing argument for --m-gram-size");
         }
       } else if (std::strcmp(argv[i], "--top-k") == 0) {
         if (i + 1 < argc) {
           params.top_k = std::stoi(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for top-k");
+          throw SpectreError("Missing argument for top-k");
         }
       } else if (std::strcmp(argv[i], "--seed") == 0) {
         if (i + 1 < argc) {
           params.seed = (uint32_t)std::stoul(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --seed");
+          throw SpectreError("Missing argument for --seed");
         }
       } else if (std::strcmp(argv[i], "--results-dir") == 0) {
         if (i + 1 < argc) {
           params.results_dir = argv[++i];
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --results-dir");
+          throw SpectreError("Missing argument for --results-dir");
         }
       } else if (std::strcmp(argv[i], "--run-id") == 0) {
         if (i + 1 < argc) {
           params.run_id = argv[++i];
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --run-id");
+          throw SpectreError("Missing argument for --run-id");
         }
       } else if (std::strcmp(argv[i], "--n-predict") == 0) {
         if (i + 1 < argc) {
           params.max_generated_tokens = std::stoll(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --n-predict");
+          throw SpectreError("Missing argument for --n-predict");
         }
       } else if (std::strcmp(argv[i], "--n-max") == 0) {
         if (i + 1 < argc) {
           params.max_tokens_to_draft = std::stoll(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --n-max");
+          throw SpectreError("Missing argument for --n-max");
         }
       } else if (std::strcmp(argv[i], "--n-min") == 0) {
         if (i + 1 < argc) {
           params.min_tokens_to_draft = std::stoll(argv[++i]);
         } else {
           config.print_usage(argv);
-          throw std::runtime_error("Missing argument for --n-min");
+          throw SpectreError("Missing argument for --n-min");
         }
       } else {
         config.print_usage(argv);
-        throw std::runtime_error(std::format("Unknown argument: {}", argv[i]));
+        throw SpectreError("Unknown argument: {}", argv[i]);
       }
     } catch (const std::invalid_argument &e) {
-      throw std::runtime_error(std::format("Invalid numeric value '{}': {}", argv[i], e.what()));
+      throw SpectreError("Invalid numeric value '{}': {}", argv[i], e.what());
     } catch (const std::out_of_range &e) {
-      throw std::runtime_error(std::format("Numeric value out of range '{}': {}", argv[i], e.what()));
+      throw SpectreError("Numeric value out of range '{}': {}", argv[i], e.what());
     }
   }
 
+  //
+  // TODO implement n-gram only mode (no draft model is required)
+  //
   if (params.target_model_path.empty()) {
     config.print_usage(argv);
-    throw std::runtime_error("Error: --target-model argument is required");
+    throw SpectreError("Error: --target-model argument is required");
   }
 
   return config;
@@ -617,7 +639,7 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
 
 class Spectre {
 private:
-  Parameters params;
+  InferenceParameters params;
 
   // --------------------------------------------------------------------
   // decode token -> token enters KV cache and produces next-token logits
@@ -709,6 +731,7 @@ private:
   std::tuple<double, double> stable_sigmoid(const float *logits_row,
                                             const llama_token token,
                                             const struct llama_vocab *vocab = nullptr) {
+
     if (vocab == nullptr) vocab = vocabulary_target;
 
     const llama_token tid = token;
@@ -753,13 +776,13 @@ private:
 
     model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), model_params));
     if (!model_weights_target) {
-      throw std::runtime_error("failed to load target model");
+      throw SpectreError("failed to load target model");
     }
 
     if (params.draft_speculative_decoding_is_enabled()) {
       model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), model_params));
       if (!model_weights_draft) {
-        throw std::runtime_error("failed to load draft model");
+        throw SpectreError("failed to load draft model");
       }
     }
 
@@ -775,13 +798,13 @@ private:
 
     ctx_target.reset(llama_init_from_model(model_weights_target.get(), ctx_params));
     if (!ctx_target) {
-      throw std::runtime_error("failed to create the llama_context for target");
+      throw SpectreError("failed to create the llama_context for target");
     }
 
     if (params.draft_speculative_decoding_is_enabled()) {
       ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), ctx_params));
       if (!ctx_draft) {
-        throw std::runtime_error("failed to create the llama_context for draft");
+        throw SpectreError("failed to create the llama_context for draft");
       }
     }
 
@@ -831,19 +854,19 @@ private:
     );
 
     if (n < 0) {
-      throw std::runtime_error(std::format("failed to tokenize prompt (n = {})", n));
+      throw SpectreError("failed to tokenize prompt (n = {})", n);
     }
 
     print("\"{}\" ({} tokens)", params.prompt.c_str(), prompt_target_len);
 
     // if context size < kv cache size then we've got a problem
     if (llama_n_ctx(ctx_target.get()) < (uint32_t)tokens_already_in_target_kv.size()) {
-      throw std::runtime_error(std::format("the prompt exceeds the context size ({} tokens, ctx {})", tokens_already_in_target_kv.size(), llama_n_ctx(ctx_target.get())));
+      throw SpectreError("the prompt exceeds the context size ({} tokens, ctx {})", tokens_already_in_target_kv.size(), llama_n_ctx(ctx_target.get()));
     }
 
     // if capacity < kv cache size then we've got a problem
     if (llama_n_batch(ctx_target.get()) < (uint32_t)tokens_already_in_target_kv.size()) {
-      throw std::runtime_error(std::format("the prompt exceeds the batch size ({} tokens, batch {})", tokens_already_in_target_kv.size(), llama_n_batch(ctx_target.get())));
+      throw SpectreError("the prompt exceeds the batch size ({} tokens, batch {})", tokens_already_in_target_kv.size(), llama_n_batch(ctx_target.get()));
     }
 
     if (params.draft_speculative_decoding_is_enabled()) {
@@ -854,9 +877,8 @@ private:
         bool id_mismatch = (add_target && (id_target != id_draft));
 
         if (add_mismatch || id_mismatch) {
-          throw std::runtime_error(std::format(
-              "{}: draft model {} tokens must match target model to use speculation. add: {} - {}, id: {} - {}\n",
-              __func__, token_type, add_target, add_draft, id_target, id_draft));
+          throw SpectreError("{}: draft model {} tokens must match target model to use speculation. add: {} - {}, id: {} - {}\n",
+                             __func__, token_type, add_target, add_draft, id_target, id_draft);
         }
       };
 
@@ -878,10 +900,9 @@ private:
 
       // check vocabulary size delta
       if (vocab_diff > delta) {
-        throw std::runtime_error(std::format(
-            "{}: draft model vocab must closely match target model to use speculation but "
-            "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}\n",
-            __func__, vocab_target_count, vocab_draft_count, vocab_diff, delta));
+        throw SpectreError("{}: draft model vocab must closely match target model to use speculation but "
+                           "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}\n",
+                           __func__, vocab_target_count, vocab_draft_count, vocab_diff, delta);
       }
 
       // validate token content matches
@@ -891,10 +912,9 @@ private:
         std::string_view token_draft = llama_vocab_get_text(vocabulary_draft, i);
 
         if (token_target != token_draft) {
-          throw std::runtime_error(std::format(
-              "{}: draft model vocab must match target model to"
-              " use speculation but token {} content differs\n",
-              __func__, i));
+          throw SpectreError("{}: draft model vocab must match target model to"
+                             " use speculation but token {} content differs\n",
+                             __func__, i);
         }
       }
     }
@@ -914,7 +934,7 @@ private:
 
     sampler_target.reset(llama_sampler_chain_init(sampler_params));
     if (!sampler_target) {
-      throw std::runtime_error("failed to create the sampler_params");
+      throw SpectreError("failed to create the sampler_params");
     }
 
     if (params.greedy) {
@@ -935,7 +955,7 @@ private:
 
       sampler_draft.reset(llama_sampler_chain_init(sampler_params));
       if (!sampler_draft) {
-        throw std::runtime_error("failed to create draft sampler chain");
+        throw SpectreError("failed to create draft sampler chain");
       }
 
       if (params.greedy) {
@@ -952,17 +972,16 @@ private:
   }
 
   void generate(void) {
-    print("llama_model_chat_template:\n{}",
-          llama_model_chat_template(model_weights_target.get(), nullptr));
+    print("llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_target.get(), nullptr));
 
     // auto-generate a run-id if none was supplied
     if (params.run_id.empty()) {
-      const std::string ts = RunRecorder::iso_timestamp(true);
+      const std::string ts = InferenceRunRecorder::iso_timestamp(true);
       const std::string mode = params.draft_speculative_decoding_is_enabled() ? "spec" : "ar";
       params.run_id = std::format("{}_{}_seed{}", ts, mode, params.seed);
     }
 
-    RunRecorder recorder(params.results_dir, params.run_id, RunRecorder::iso_timestamp(), params);
+    InferenceRunRecorder recorder(params.results_dir, params.run_id, InferenceRunRecorder::iso_timestamp(), params);
 
     print("writing structured run output to: {}", recorder.dir().string());
 
@@ -980,7 +999,7 @@ private:
 
     // we prefilled target's kv cache with the prompt in the last step
     if (tokens_already_in_target_kv.empty()) {
-      throw std::runtime_error("prompt_target is empty");
+      throw SpectreError("prompt_target is empty");
     }
 
     //
@@ -994,7 +1013,7 @@ private:
 
     // evaluate prompt => update KV cache and compute logits for the prompt
     if (llama_decode(ctx_target.get(), batch)) {
-      throw std::runtime_error("failed to eval prompt prefix on target");
+      throw SpectreError("failed to eval prompt prefix on target");
     }
 
     llama_synchronize(ctx_target.get());
@@ -1088,13 +1107,13 @@ private:
         // evaluate the batch => update KV cache and compute logits for the batch
         //
         if (llama_decode(ctx_target.get(), speculative_batch_target)) {
-          throw std::runtime_error("target speculative verification decode failed");
+          throw SpectreError("target speculative verification decode failed");
         }
 
         // do the actual verification of the sampled tokens
         const std::vector<llama_token> accepted = verify_proposal(sampler_target.get(), ctx_target.get(), proposal_tokens);
         if (accepted.empty()) {
-          throw std::runtime_error("speculative accept produced no tokens");
+          throw SpectreError("speculative accept produced no tokens");
         }
 
         // because accepted is a vector of llama_token:
@@ -1253,7 +1272,7 @@ private:
       // evaluate the batch => update KV cache and compute logits for the batch
       //
       if (llama_decode(ctx_target.get(), batch)) {
-        throw std::runtime_error("failed to eval");
+        throw SpectreError("failed to eval");
       }
 
       // sample and accept the last token of the last evaluation (the next token)
@@ -1264,7 +1283,7 @@ private:
 
       recorder.record_token(static_cast<int>(tokens_generated_in_round), /* call */
                             "ar",                                        /* source */
-                            -1,                                          /* pos_in_draft */
+                            std::nullopt,                                /* pos_in_draft */
                             static_cast<int>(pending_token),             /* token_id */
                             prob,                                        /* p_target */
                             std::numeric_limits<double>::quiet_NaN(),    /* p_draft */
@@ -1472,12 +1491,11 @@ private:
 
     // the draft-side token mirror must track KV exactly
     if (draft_kv_cache_len() != tokens_in_draft_kv.size()) {
-      print(
-          GGML_LOG_LEVEL_WARN,
-          "draft(): KV/token mirror drift detected"
-          "(kv_len={}, prompt_draft={})",
-          draft_kv_cache_len(),
-          tokens_in_draft_kv.size());
+      print(GGML_LOG_LEVEL_WARN,
+            "draft(): KV/token mirror drift detected"
+            "(kv_len={}, prompt_draft={})",
+            draft_kv_cache_len(),
+            tokens_in_draft_kv.size());
 
       print(GGML_LOG_LEVEL_WARN, "resyncing draft state");
 
@@ -1500,11 +1518,10 @@ private:
     const uint32_t draft_context_size_capacity = llama_n_ctx(ctx_draft.get());
 
     if (params.max_tokens_to_draft >= static_cast<int64_t>(draft_context_size_capacity)) {
-      throw std::runtime_error(
-          std::format("draft n_max ({}) must be less "
-                      "than draft model context size ({})",
-                      params.max_tokens_to_draft,
-                      draft_context_size_capacity));
+      throw SpectreError("draft n_max ({}) must be less "
+                         "than draft model context size ({})",
+                         params.max_tokens_to_draft,
+                         draft_context_size_capacity);
     }
 
     const int tokens_queued_to_be_drafted = static_cast<int>(draft_context_size_capacity - params.max_tokens_to_draft);
@@ -1604,7 +1621,7 @@ private:
         // evaluate the batch => update KV cache and compute logits for the batch
         //
         if (llama_decode(ctx_draft.get(), speculative_batch_draft)) {
-          throw std::runtime_error("draft model: failed to decode prompt window");
+          throw SpectreError("draft model: failed to decode prompt window");
         }
       }
 
@@ -1631,7 +1648,7 @@ private:
     // evaluate the batch => update KV cache and compute logits for the batch
     //
     if (llama_decode(ctx_draft.get(), speculative_batch_draft)) {
-      throw std::runtime_error("draft model: failed to decode last context token");
+      throw SpectreError("draft model: failed to decode last context token");
     }
 
     //
