@@ -140,9 +140,9 @@ struct InferenceParameters {
   // hard cap on generated tokens (0 = unlimited, stop only on EOS / KV exhaustion)
   int64_t max_generated_tokens = 0;
 
-  // -------------------------------
-  // stochastic speculative sampling
-  // -------------------------------
+  /// =================================
+  ///  stochastic speculative sampling
+  /// =================================
 
   // updates logit_i' = logit_i / temp
   float temperature = 0.8f;
@@ -153,16 +153,16 @@ struct InferenceParameters {
 
   uint32_t seed = 1234;
 
-  // ------------------------------
-  // greedy exact-match speculation
-  // ------------------------------
+  /// ================================
+  ///  greedy exact-match speculation
+  /// ================================
 
   // select the token with the highest prob
   bool greedy = false;
 
-  // --------------------------------
-  // n-gram implementation parameters
-  // --------------------------------
+  /// ==================================
+  ///  n-gram implementation parameters
+  /// ==================================
 
   // the n-gram cache implementation maintains statistics about short n-gram sequences
   bool ngram = false;
@@ -181,16 +181,16 @@ struct InferenceParameters {
                        "For each property implement a getter and setter using exactly this pattern:"
                        "def get_X(self): return self._X and def set_X(self, value): self._X = value";
 
-  // -----------------------------------
-  // reproducibility / structured output
-  // -----------------------------------
+  /// =====================================
+  ///  reproducibility / structured output
+  /// =====================================
 
   std::string run_id; // auto-generated if empty
   std::string results_dir = "results/spectre";
 
-  // -------------------------------
-  // speculative decoding parameters
-  // -------------------------------
+  /// =================================
+  ///  speculative decoding parameters
+  /// =================================
 
   int64_t min_tokens_to_draft = 0;   // minimum number of draft tokens to use for speculative decoding
   int64_t max_tokens_to_draft = 8;   // maximum number of tokens to draft during speculative decoding
@@ -206,10 +206,27 @@ struct InferenceParameters {
   bool draft_speculative_decoding_is_enabled() const {
     return !draft_model_path.empty();
   }
+
+  bool ngram_speculative_decoding_is_enabled() const {
+    return ngram;
+  }
+
+  bool speculative_decoding_is_enabled() const {
+    return draft_speculative_decoding_is_enabled() || ngram_speculative_decoding_is_enabled();
+  }
+};
+
+enum VerificationKind {
+  Correction,
+  Bonus,
+  Invalid
 };
 
 struct VerificationResults {
+  llama_token target_token;
   std::vector<llama_token> accepted_drafts;
+  VerificationKind kind = VerificationKind::Invalid;
+  std::optional<std::size_t> rejected_proposal_index = std::nullopt;
 };
 
 struct InferenceRoundSummary {
@@ -234,7 +251,7 @@ public:
     if (!tokens) {
       throw SpectreError("failed to open {}", (run_dir / "tokens.csv").string());
     }
-    tokens << "step,call,source,pos_in_draft,token_id,p_target,p_draft,logit,logprob\n";
+    tokens << "step,call,source,pos_in_draft,token_id,p_target,rejected_token_id,p_draft,logit,logprob\n";
 
     write_metadata(false, /* complete */
                    0,     /* tokens_decoded_count */
@@ -251,6 +268,7 @@ public:
                     std::optional<std::size_t> position_in_draft,
                     int token_id,
                     double p_target,
+                    std::optional<int> rejected_token_id,
                     double p_draft,
                     double logit,
                     double logprob) {
@@ -258,6 +276,7 @@ public:
     tokens << step << ',' << call << ',' << source << ','
            << position_in_draft.value_or(-1) << ',' << token_id << ','
            << fmt_double(p_target) << ','
+           << (rejected_token_id.has_value() ? std::to_string(*rejected_token_id) : std::string{}) << ','
            << fmt_double(p_draft) << ','
            << fmt_double(logit) << ','
            << fmt_double(logprob) << '\n'
@@ -373,7 +392,13 @@ private:
       if (i > 0) m << ",";
       m << "\n    {\"n_drafted\": " << r.tokens_drafted_this_round
         << ", \"n_accepted_drafts\": " << r.drafts_accepted_this_round
-        << ", \"rejected_proposal_index\": " << r.rejected_proposal_index.value_or(-1) << "}";
+        << ", \"rejected_proposal_index\": ";
+      if (r.rejected_proposal_index.has_value()) {
+        m << *r.rejected_proposal_index;
+      } else {
+        m << "null";
+      }
+      m << "}";
     }
     if (!rounds.empty()) m << "\n  ";
     m << "]\n";
@@ -626,9 +651,6 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
     }
   }
 
-  //
-  // TODO implement n-gram only mode (no draft model is required)
-  //
   if (params.target_model_path.empty()) {
     config.print_usage(argv);
     throw SpectreError("Error: --target-model argument is required");
@@ -641,10 +663,10 @@ class Spectre {
 private:
   InferenceParameters params;
 
-  // --------------------------------------------------------------------
-  // decode token -> token enters KV cache and produces next-token logits
-  // sample token -> selects from logits but does not enter KV cache
-  // --------------------------------------------------------------------
+  /// ======================================================================
+  ///  decode token -> token enters KV cache and produces next-token logits
+  ///  sample token -> selects from logits but does not enter KV cache
+  /// ======================================================================
 
   // token that's accepted but not yet in the target kv cache
   llama_token pending_token = 0;
@@ -674,6 +696,7 @@ private:
   const struct llama_vocab *vocabulary_draft = nullptr;
   const struct llama_vocab *vocabulary_target = nullptr;
 
+  // for this proposal, what did the drafter think q(token) was?
   std::vector<double> last_draft_probabilities;
 
   void escape_newlines_in_place(std::string &str) {
@@ -1035,53 +1058,61 @@ private:
     // get a pointer to target's context
     llama_memory_t mem_target = llama_get_memory(ctx_target.get());
 
-    // --------------------
-    // speculative decoding
-    // --------------------
+    /// ======================
+    ///  speculative decoding
+    /// ======================
 
     int speculative_round = 0;
     int tokens_generated_in_round = 0;
     int bonus_tokens_drafted_in_round = 0;
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      print("speculative decoding using a draft model is enabled");
+    if (params.speculative_decoding_is_enabled()) {
+      print("speculative decoding using {}{} is enabled",
+            params.draft_speculative_decoding_is_enabled() ? "draft model" : "",
+            params.ngram_speculative_decoding_is_enabled() ? " and an ngram cache" : "");
 
       {
         std::array<char, 1024> buf{};
         llama_model_desc(model_weights_target.get(), buf.data(), buf.size());
         print("target_model :    {}", buf.data());
 
-        llama_model_desc(model_weights_draft.get(), buf.data(), buf.size());
-        print("draft_model  :    {}", buf.data());
+        if (params.draft_speculative_decoding_is_enabled()) {
+          llama_model_desc(model_weights_draft.get(), buf.data(), buf.size());
+          print("draft_model  :    {}", buf.data());
+        }
       }
 
-      while (!params.has_encountered_eos) {
-        // append the pending target token immediately after sequence already cached prefix
-        // we use the KV cache as the position source of truth after rollback operations
-        const llama_pos max_cached_position = llama_memory_seq_pos_max(mem_target, 0);
-        llama_pos next_target_position = (max_cached_position < 0) ? 0 : (max_cached_position + 1);
+      while (!params.has_encountered_eos) /* decoding event loop that only stops when we encounter end-of-sentence */
+      {
 
         //
-        // get proposed tokens
+        // append the pending target token immediately after sequence already cached prefix
+        // we use the KV cache as the position source of truth after rollback operations
+        //
+        const llama_pos max_cached_position = llama_memory_seq_pos_max(mem_target, 0);
+        llama_pos next_target_token_position = (max_cached_position < 0) ? 0 : (max_cached_position + 1);
+
+        //
+        // sample proposed tokens
         //
         // they may come from a draft model or n-gram and are not yet accepted
         //
-        std::vector<llama_token> proposal_tokens;
+        std::vector<llama_token> proposed_tokens;
 
         // n-gram first if --ngram is set, otherwise (or on miss) the draft model
         if (params.ngram) {
-          proposal_tokens = draft_using_ngram();
+          proposed_tokens = draft_using_ngram();
         }
 
         // fallback
-        if (proposal_tokens.empty()) {
-          proposal_tokens = draft_using_draft_model();
+        if (proposed_tokens.empty()) {
+          proposed_tokens = draft_using_draft_model();
         }
 
-        if (proposal_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
-          proposal_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
-        } else if (proposal_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
-          proposal_tokens.clear();
+        if (proposed_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
+          proposed_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
+        } else if (proposed_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
+          proposed_tokens.clear();
         }
 
         // reset target batch so we can reuse it on later iterations
@@ -1091,16 +1122,16 @@ private:
         create_new_batch(speculative_batch_target,
                          static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
                          pending_token,
-                         next_target_position);
+                         next_target_token_position);
 
-        next_target_position += 1;
+        next_target_token_position += 1;
 
         // add drafted tokens to the target
-        for (std::size_t i = 0; i < proposal_tokens.size(); ++i) {
+        for (std::size_t i = 0; i < proposed_tokens.size(); ++i) {
           create_new_batch(speculative_batch_target,
                            static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
-                           proposal_tokens[i],
-                           next_target_position + (llama_pos)i);
+                           proposed_tokens[i],
+                           next_target_token_position + (llama_pos)i);
         }
 
         //
@@ -1110,57 +1141,32 @@ private:
           throw SpectreError("target speculative verification decode failed");
         }
 
-        // do the actual verification of the sampled tokens
-        const std::vector<llama_token> accepted = verify_proposal(sampler_target.get(), ctx_target.get(), proposal_tokens);
-        if (accepted.empty()) {
-          throw SpectreError("speculative accept produced no tokens");
-        }
-
-        // because accepted is a vector of llama_token:
-        // [matched draft tokens..., correction-or-bonus token]
         //
-        // final token was only sampled and it is not yet in the KV cache that's why we do -1
-        next_target_position += static_cast<llama_pos>(accepted.size() - 1);
+        // do the actual verification of the sampled tokens
+        //
+        auto verifications = verify_draft_proposals(proposed_tokens);
 
-        params.tokens_drafted_count += static_cast<int64_t>(proposal_tokens.size());
-        params.tokens_accepted_count += static_cast<int64_t>(accepted.size() - 1);
+        auto &kind = verifications.kind;
+        auto &target = verifications.target_token;
+        auto &accepted = verifications.accepted_drafts;
+        auto &rejected_proposal_index = verifications.rejected_proposal_index;
 
-        const int accepted_drafts_in_round = static_cast<int>(accepted.size() - 1);
+        params.tokens_accepted_count += static_cast<int64_t>(accepted.size());
+        params.tokens_drafted_count += static_cast<int64_t>(proposed_tokens.size());
 
-        std::optional<std::size_t> rejected_proposal_index;
+        next_target_token_position += static_cast<llama_pos>(accepted.size());
 
-        if (accepted.size() != proposal_tokens.size() + 1) {
-          rejected_proposal_index = accepted_drafts_in_round;
-        }
-
-        if (!rejected_proposal_index.has_value()) {
+        if (kind == VerificationKind::Bonus) {
           bonus_tokens_drafted_in_round += 1;
         }
 
-        recorder.record_round(static_cast<int>(proposal_tokens.size()),
-                              accepted_drafts_in_round,
-                              rejected_proposal_index);
+        for (std::size_t i = 0; i < accepted.size(); ++i) /* iterate over the accepted tokens and print them */
+        {
 
-        for (std::size_t i = 0; i < accepted.size(); ++i) {
           auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)i), accepted[i]);
           const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
 
-          const bool is_bonus_token = (!rejected_proposal_index.has_value()) && (i + 1 == accepted.size());
-          const bool is_correction_token = (rejected_proposal_index.has_value()) && (i + 1 == accepted.size());
-
-          std::string_view source;
-
-          if (is_bonus_token) {
-            source = "bonus";
-          } else if (is_correction_token) {
-            source = "correction";
-          } else {
-            source = "draft";
-          }
-
-          std::optional<std::size_t> position_in_draft = is_bonus_token
-                                                             ? std::nullopt
-                                                             : std::optional<std::size_t>{i};
+          std::optional<std::size_t> position_in_draft = std::optional<std::size_t>{i};
 
           double draft_probability = std::numeric_limits<double>::quiet_NaN();
 
@@ -1169,30 +1175,38 @@ private:
           }
 
           recorder.record_token(speculative_round,             /* call */
-                                source,                        /* source */
+                                "draft",                       /* source */
                                 position_in_draft,             /* pos_in_draft */
                                 static_cast<int>(accepted[i]), /* token_id */
                                 prob,                          /* p_target */
+                                std::nullopt,                  /* rejected_token_id */
                                 draft_probability,             /* p_draft */
                                 logit,                         /* logit */
                                 logprob                        /* logprob */
           );
 
+          //
           // we decoded the pending_token so now we add it to the target's KV cache
+          //
           tokens_already_in_target_kv.push_back(pending_token);
+
+          //
+          // for now temporary, pending_token is the accepted token we are currently on
+          //
           pending_token = accepted[i];
 
           // first increment overall generated tokens then check
           tokens_generated_in_round += 1;
 
-          // is pending_token end-of-generation
+          // is pending_token end-of-generation?
           if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
             params.has_encountered_eos = true;
             break;
           }
 
           // hard cap on tokens (treated like EOS for the purposes of clean finalize)
-          if (params.max_generated_tokens > 0 && static_cast<int64_t>(tokens_generated_in_round + 1) >= params.max_generated_tokens) {
+          if (params.max_generated_tokens > 0 &&
+              static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
             params.has_encountered_eos = true;
             break;
           }
@@ -1210,12 +1224,76 @@ private:
 
           print("\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
                 color, token, pad,
-                static_cast<int>(accepted.size() - 1),
-                static_cast<int>(proposal_tokens.size()),
+                static_cast<int>(accepted.size()),
+                static_cast<int>(proposed_tokens.size()),
                 pending_token);
         }
 
-        llama_memory_seq_rm(mem_target, 0, next_target_position, -1);
+        //
+        // commit the last pending token into the KV mirror (the last accepted draft, or
+        // the round's original pending if no draft was kept)
+        //
+        tokens_already_in_target_kv.push_back(pending_token);
+
+        // drafts already hit EOS / n_predict: do not emit the correction/bonus
+        if (!params.has_encountered_eos) {
+          pending_token = target;
+          tokens_generated_in_round += 1;
+
+          const std::string_view source = [](VerificationKind k) {
+            switch (k) {
+            case Bonus:
+              return "bonus";
+            case Correction:
+              return "correction";
+            case Invalid:
+            default:
+              return "draft";
+            }
+          }(kind);
+
+          auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)accepted.size()), target);
+          const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
+
+          std::optional<std::size_t> position_in_draft;
+          std::optional<int> rejected_token_id;
+          double draft_probability = std::numeric_limits<double>::quiet_NaN();
+
+          // correction: token_id is X, rejected_token_id is H, p_draft is q(H)
+          if (kind == VerificationKind::Correction && rejected_proposal_index.has_value() &&
+              *rejected_proposal_index < proposed_tokens.size()) {
+            position_in_draft = rejected_proposal_index;
+            rejected_token_id = static_cast<int>(proposed_tokens[*rejected_proposal_index]);
+            if (*position_in_draft < last_draft_probabilities.size()) {
+              draft_probability = last_draft_probabilities[*position_in_draft];
+            }
+          }
+
+          recorder.record_token(speculative_round,        /* call */
+                                source,                   /* source */
+                                position_in_draft,        /* pos_in_draft */
+                                static_cast<int>(target), /* token_id */
+                                prob,                     /* p_target */
+                                rejected_token_id,        /* rejected_token_id */
+                                draft_probability,        /* p_draft */
+                                logit,                    /* logit */
+                                logprob                   /* logprob */
+          );
+
+          if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
+            params.has_encountered_eos = true;
+          } else if (params.max_generated_tokens > 0 &&
+                     static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
+            params.has_encountered_eos = true;
+          }
+        }
+
+        llama_memory_seq_rm(mem_target, 0, next_target_token_position, -1);
+
+        recorder.record_round(static_cast<int>(proposed_tokens.size()),
+                              static_cast<int>(accepted.size()),
+                              rejected_proposal_index);
+
         speculative_round += 1;
       }
 
@@ -1263,9 +1341,9 @@ private:
       return;
     }
 
-    // --------------
-    // autoregressive
-    // --------------
+    /// =========================
+    ///  autoregressive decoding
+    /// =========================
 
     for (;;) {
       //
@@ -1286,6 +1364,7 @@ private:
                             std::nullopt,                                /* pos_in_draft */
                             static_cast<int>(pending_token),             /* token_id */
                             prob,                                        /* p_target */
+                            std::nullopt,                                /* rejected_token_id */
                             std::numeric_limits<double>::quiet_NaN(),    /* p_draft */
                             logit,                                       /* logit */
                             logprob                                      /* logprob */
@@ -1376,33 +1455,55 @@ private:
     batch.n_tokens++;
   }
 
-  std::vector<llama_token> verify_proposal(llama_sampler *sampler, llama_context *ctx, const std::vector<llama_token> &proposes) {
+  VerificationResults verify_draft_proposals(const std::vector<llama_token> &proposes) {
+
+    auto ctx = ctx_target.get();
+    auto sampler = sampler_target.get();
+
     llama_synchronize(ctx); // wait until all computations are finished
 
-    // this can be a correction that rejects the proposal
-    std::vector<llama_token> tokens;
-    tokens.reserve(proposes.size() + 1); // plus one because we might have to correct proposal
+    VerificationResults results;
+
+    auto &kind = results.kind;
+    auto &accepted = results.accepted_drafts;
+    auto &target_token = results.target_token;
+    auto &rejection_position = results.rejected_proposal_index;
+
+    accepted.reserve(proposes.size() + 1);
 
     for (std::size_t index = 0; index < proposes.size(); ++index) {
       // given the current logits, pick a token using the sampler (greedy or stochastic)
-      const llama_token accepted_token = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(index));
-
-      // that token is now part of the sequence
-      tokens.push_back(accepted_token);
+      const llama_token token = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(index));
 
       // stop at first mismatch
-      if (proposes[index] != accepted_token) {
-        return tokens;
+      if (proposes[index] != token) {
+        target_token = token;
+        rejection_position = index;
+        kind = VerificationKind::Correction;
+        return results;
       }
+
+      accepted.push_back(token);
     }
 
+    //
     // * after all N proposals match, logits at index N predict the token after the final proposal
-    // * sampling it gives the free (no additional target-model forward pass) bonus token
-    //   from the same target-model decode.
-    const llama_token id = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(proposes.size()));
-    tokens.push_back(id);
+    //
+    // * sampling it gives the free (no additional target-model forward pass) bonus token from the
+    //   same target-model decode.
+    //
+    const llama_token bonus = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(proposes.size()));
 
-    return tokens;
+    if (proposes.size() == 0) {
+      kind = VerificationKind::Correction;
+    } else {
+      kind = VerificationKind::Bonus;
+    }
+
+    target_token = bonus;
+    rejection_position = std::nullopt;
+
+    return results;
   }
 
   // READ: https://web.stanford.edu/~jurafsky/slp3/3.pdf
@@ -1425,9 +1526,10 @@ private:
     const auto &tokens = tokens_already_in_target_kv;
     const llama_token sampled = pending_token; // sampled but not decoded
 
-    const std::size_t length = tokens.size();
-    const std::size_t N = static_cast<std::size_t>(params.n_gram_size);
-    const std::size_t M = static_cast<std::size_t>(params.m_gram_size);
+    const std::size_t length = tokens.size(); // target kv cache length
+
+    const std::size_t N = static_cast<std::size_t>(params.n_gram_size); // how many tokens we match
+    const std::size_t M = static_cast<std::size_t>(params.m_gram_size); // max how many tokens we copy after a hit
 
     std::vector<llama_token> result;
     if (length <= N + M + 1) {
@@ -1437,10 +1539,12 @@ private:
     std::vector<llama_token> pattern;
     pattern.reserve(N);
 
+    // get the first pattern occurence (starting from the end)
     for (std::size_t j = length - N + 1; j < length; ++j) {
       pattern.push_back(tokens[j]);
     }
 
+    // add to that our pending token
     pattern.push_back(sampled);
 
     std::size_t match_pos = 0;
@@ -1678,10 +1782,6 @@ private:
         (void)_logit;
         last_draft_probabilities.push_back(p_d);
       }
-
-      // that token is now part of the sequence, update internal state
-      llama_sampler_accept(sampler_draft.get(), proposed_token);
-      result.push_back(proposed_token);
 
       // make sure we don't surpass the max number of tokens to draft during speculative decoding
       if (params.max_tokens_to_draft <= static_cast<int>(result.size())) {
