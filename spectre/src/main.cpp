@@ -1,3 +1,4 @@
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unistd.h>
 #include <vector>
 
@@ -22,6 +24,108 @@
 /// ===========
 ///  Utilities
 /// ===========
+
+class SpectreError : public std::runtime_error {
+public:
+  template <typename... Args>
+  explicit SpectreError(std::format_string<Args...> fmt, Args &&...args)
+      : std::runtime_error(std::format(fmt, std::forward<Args>(args)...)) {}
+};
+
+class InferenceTelemetry {
+public:
+  struct Telemetry {
+    struct llama_perf_context_data perf {};
+    std::chrono::steady_clock::time_point start_time{};
+    std::chrono::steady_clock::time_point end_time{};
+
+    std::optional<std::uint64_t> start_ujoules;
+    std::optional<std::uint64_t> end_ujoules;
+
+    double total_seconds{};
+    std::optional<double> total_joules;
+    std::optional<double> average_wattage;
+
+    double milliseconds() const { return total_seconds * 1000.0; }
+  };
+
+  Telemetry prompt{};
+  Telemetry decode{};
+
+  InferenceTelemetry() {
+    if (read_energy_uj()) {
+      rapl_available = true;
+      std::ifstream range(kRaplMaxRangePath);
+      if (range) {
+        range >> rapl_max_range_uj;
+      }
+    }
+  }
+
+  bool energy_available() const { return rapl_available; }
+
+  const char *energy_source() const {
+    return rapl_available ? "intel-rapl:0" : "unavailable";
+  }
+
+  void begin_measuring(Telemetry &s) {
+    s = Telemetry{};
+    s.start_ujoules = read_energy_uj();
+    s.start_time = std::chrono::steady_clock::now();
+  }
+
+  void end_measuring(Telemetry &s) {
+    s.end_time = std::chrono::steady_clock::now();
+    s.end_ujoules = read_energy_uj();
+
+    s.total_seconds = std::chrono::duration<double>(s.end_time - s.start_time).count();
+
+    if (s.start_ujoules && s.end_ujoules) {
+      if (auto delta_uj = energy_delta_uj(*s.start_ujoules, *s.end_ujoules)) {
+        s.total_joules = static_cast<double>(*delta_uj) / 1e6;
+        if (s.total_seconds > 0.0) {
+          s.average_wattage = *s.total_joules / s.total_seconds;
+        }
+      }
+    }
+  }
+
+  std::optional<double> decode_joules_per_token(int64_t n_tokens) const {
+    if (!decode.total_joules || n_tokens <= 0) {
+      return std::nullopt;
+    }
+    return *decode.total_joules / static_cast<double>(n_tokens);
+  }
+
+private:
+  static constexpr const char *kRaplEnergyPath = "/sys/class/powercap/intel-rapl:0/energy_uj";
+  static constexpr const char *kRaplMaxRangePath = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj";
+
+  bool rapl_available{};
+  std::uint64_t rapl_max_range_uj{};
+
+  std::optional<std::uint64_t> read_energy_uj() const {
+    std::ifstream file(kRaplEnergyPath);
+    if (!file) {
+      return std::nullopt;
+    }
+    std::uint64_t ujoules{};
+    if (!(file >> ujoules)) {
+      return std::nullopt;
+    }
+    return ujoules;
+  }
+
+  std::optional<std::uint64_t> energy_delta_uj(std::uint64_t start, std::uint64_t end) const {
+    if (end >= start) {
+      return end - start;
+    }
+    if (rapl_max_range_uj == 0) {
+      return std::nullopt;
+    }
+    return (rapl_max_range_uj - start) + end;
+  }
+};
 
 class TerminalColor {
   const char *code;
@@ -84,13 +188,6 @@ static inline std::string log_level_to_string(enum ggml_log_level level) {
   }
 }
 
-class SpectreError : public std::runtime_error {
-public:
-  template <typename... Args>
-  explicit SpectreError(std::format_string<Args...> fmt, Args &&...args)
-      : std::runtime_error(std::format(fmt, std::forward<Args>(args)...)) {}
-};
-
 template <typename... Args>
 static inline void print(enum ggml_log_level level, std::string_view fmt, const Args &...args) {
   try {
@@ -110,19 +207,25 @@ static inline void print(std::string_view fmt, const Args &...args) {
 
 struct LlamaModelDeleter {
   void operator()(llama_model *m) {
-    if (m) llama_model_free(m);
+    if (m) {
+      llama_model_free(m);
+    }
   }
 };
 
 struct LlamaContextDeleter {
   void operator()(llama_context *c) {
-    if (c) llama_free(c);
+    if (c) {
+      llama_free(c);
+    }
   }
 };
 
 struct LlamaSamplerDeleter {
   void operator()(llama_sampler *s) {
-    if (s) llama_sampler_free(s);
+    if (s) {
+      llama_sampler_free(s);
+    }
   }
 };
 
@@ -210,10 +313,6 @@ struct InferenceParameters {
   bool ngram_speculative_decoding_is_enabled() const {
     return ngram;
   }
-
-  bool speculative_decoding_is_enabled() const {
-    return draft_speculative_decoding_is_enabled() || ngram_speculative_decoding_is_enabled();
-  }
 };
 
 enum VerificationKind {
@@ -296,7 +395,11 @@ public:
                 int64_t drafts_accepted_count,
                 int64_t bonus_tokens_drafted_in_round,
                 double prompt_ms,
-                double decode_ms) {
+                double decode_ms,
+                std::optional<double> energy_j = std::nullopt,
+                std::optional<double> j_per_token = std::nullopt,
+                std::optional<double> average_wattage = std::nullopt,
+                std::string_view energy_source = "unavailable") {
     tokens.flush();
     tokens.close();
 
@@ -306,8 +409,11 @@ public:
                    drafts_accepted_count,         /* drafts_accepted_count */
                    bonus_tokens_drafted_in_round, /* bonus_tokens_drafted_in_round */
                    prompt_ms,                     /* prompt_ms */
-                   decode_ms                      /* decode_ms */
-    );
+                   decode_ms,                     /* decode_ms */
+                   energy_j,
+                   j_per_token,
+                   average_wattage,
+                   energy_source);
   }
 
   const std::filesystem::path &dir() const { return run_dir; }
@@ -334,7 +440,11 @@ private:
                       int64_t drafts_accepted_count,
                       int64_t bonus_tokens_drafted_in_round,
                       double prompt_ms,
-                      double decode_ms) {
+                      double decode_ms,
+                      std::optional<double> energy_j = std::nullopt,
+                      std::optional<double> j_per_token = std::nullopt,
+                      std::optional<double> average_wattage = std::nullopt,
+                      std::string_view energy_source = "unavailable") {
 
     const std::filesystem::path final_path = run_dir / "meta.json";
     const std::filesystem::path tmp_path = run_dir / "meta.json.tmp";
@@ -357,7 +467,7 @@ private:
     m << "  \"config\": {\n";
     m << "    \"target_model_path\": \"" << json_escape(p.target_model_path) << "\",\n";
     m << "    \"draft_model_path\": " << (p.draft_model_path.empty() ? "null" : ("\"" + json_escape(p.draft_model_path) + "\"")) << ",\n";
-    m << "    \"speculative\": " << (p.draft_model_path.empty() ? "false" : "true") << ",\n";
+    m << "    \"speculative\": " << ((!p.draft_model_path.empty() || p.ngram) ? "true" : "false") << ",\n";
     m << "    \"ctx\": " << p.context_size << ",\n";
     m << "    \"ngl\": " << p.gpu_layers << ",\n";
     m << "    \"n_min\": " << p.min_tokens_to_draft << ",\n";
@@ -383,7 +493,17 @@ private:
     m << "    \"prompt_ms\": " << prompt_ms << ",\n";
     m << "    \"decode_ms\": " << decode_ms << ",\n";
     m << "    \"total_ms\": " << total_ms << ",\n";
-    m << "    \"tok_per_s\": " << tok_per_s << "\n";
+    m << "    \"tok_per_s\": " << tok_per_s << ",\n";
+    m << "    \"energy_j\": ";
+    write_json_optional_double(m, energy_j);
+    m << ",\n";
+    m << "    \"j_per_token\": ";
+    write_json_optional_double(m, j_per_token);
+    m << ",\n";
+    m << "    \"average_wattage\": ";
+    write_json_optional_double(m, average_wattage);
+    m << ",\n";
+    m << "    \"energy_source\": \"" << json_escape(energy_source) << "\"\n";
     m << "  },\n";
 
     m << "  \"rounds\": [";
@@ -416,6 +536,14 @@ private:
   static std::string fmt_double(double v) {
     if (std::isnan(v)) return std::string{};
     return std::format("{:.8g}", v);
+  }
+
+  static void write_json_optional_double(std::ostream &os, const std::optional<double> &v) {
+    if (v.has_value() && std::isfinite(*v)) {
+      os << *v;
+    } else {
+      os << "null";
+    }
   }
 
   static std::string json_escape(std::string_view s) {
@@ -656,12 +784,24 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
     throw SpectreError("Error: --target-model argument is required");
   }
 
+  if (params.run_id.empty()) {
+    const std::string ts = InferenceRunRecorder::iso_timestamp(true);
+
+    const std::string_view mode = (params.draft_speculative_decoding_is_enabled() ||
+                                   params.ngram_speculative_decoding_is_enabled())
+                                      ? "spec"
+                                      : "ar";
+
+    params.run_id = std::format("{}_{}_seed{}", ts, mode, params.seed);
+  }
+
   return config;
 }
 
 class Spectre {
 private:
   InferenceParameters params;
+  InferenceTelemetry telemetry;
 
   /// ======================================================================
   ///  decode token -> token enters KV cache and produces next-token logits
@@ -698,6 +838,46 @@ private:
 
   // for this proposal, what did the drafter think q(token) was?
   std::vector<double> last_draft_probabilities;
+
+  std::optional<InferenceRunRecorder> recorder;
+  int tokens_generated_in_round = 0;
+  int bonus_tokens_drafted_in_round = 0;
+
+  const bool ds = params.draft_speculative_decoding_is_enabled(); // draft based speculative decoding
+  const bool ns = params.ngram_speculative_decoding_is_enabled(); // ngram based speculative decoding
+
+  const struct llama_sampler_chain_params default_sampler_params = []() {
+    struct llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+
+    sampler_params.no_perf = false;
+
+    return sampler_params;
+  }();
+
+  const struct llama_context_params default_ctx_params = [this]() {
+    struct llama_context_params ctx_params = llama_context_default_params();
+
+    ctx_params.no_perf = false;
+    ctx_params.n_ctx = params.context_size;
+
+    return ctx_params;
+  }();
+
+  const struct llama_model_params default_model_params = [this]() {
+    struct llama_model_params model_params = llama_model_default_params();
+
+#if 0
+      ggml_backend_dev_t model_backend = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+      model_params.devices = &model_backend;
+#endif
+
+    model_params.n_gpu_layers = params.gpu_layers;
+    model_params.load_mode = llama_supports_mmap()
+                                 ? LLAMA_LOAD_MODE_MMAP
+                                 : LLAMA_LOAD_MODE_NONE;
+
+    return model_params;
+  }();
 
   void escape_newlines_in_place(std::string &str) {
     size_t pos = 0;
@@ -751,6 +931,7 @@ private:
     return std::make_tuple(logit, prob);
   }
 
+  // TODO
   std::tuple<double, double> stable_sigmoid(const float *logits_row,
                                             const llama_token token,
                                             const struct llama_vocab *vocab = nullptr) {
@@ -771,7 +952,7 @@ private:
     return std::make_tuple(logit, prob);
   }
 
-  void load_models(void) {
+  void init_backend() {
     auto logger = [](ggml_log_level level, const char *text, void *) {
       std::cout << log_level_to_string(level) << text << std::flush;
     };
@@ -784,96 +965,133 @@ private:
     print("llama_supports_mmap:           {}", llama_supports_mmap());
     print("llama_supports_mlock:          {}", llama_supports_mlock());
     print("llama_supports_gpu_offload:    {}", llama_supports_gpu_offload());
+  }
 
-    struct llama_model_params model_params = llama_model_default_params();
+  void load_draft() {
+    model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), default_model_params));
+    if (!model_weights_draft) {
+      throw SpectreError("failed to load draft model");
+    }
 
-#if 0
-      ggml_backend_dev_t model_backend = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-      model_params.devices = &model_backend;
-#endif
+    print("draft_llama_model_n_params:    {}", llama_model_n_params(model_weights_draft.get()));
 
-    model_params.n_gpu_layers = params.gpu_layers;
-    model_params.load_mode = llama_supports_mmap()
-                                 ? LLAMA_LOAD_MODE_MMAP
-                                 : LLAMA_LOAD_MODE_NONE;
+    ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), default_ctx_params));
+    if (!ctx_draft) {
+      throw SpectreError("failed to create the llama_context for draft");
+    }
 
-    model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), model_params));
+    auto d = ctx_draft.get();
+
+    print("draft_llama_n_ctx:        {}", llama_n_ctx(d));
+    print("draft_llama_n_ctx_seq:    {}", llama_n_ctx_seq(d));
+    print("draft_llama_n_batch:      {}", llama_n_batch(d));
+    print("draft_llama_n_ubatch:     {}", llama_n_ubatch(d));
+    print("draft_llama_n_seq_max:    {}", llama_n_seq_max(d));
+    print("draft_llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_draft.get(), nullptr));
+  }
+
+  void load_target() {
+    model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), default_model_params));
     if (!model_weights_target) {
       throw SpectreError("failed to load target model");
     }
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), model_params));
-      if (!model_weights_draft) {
-        throw SpectreError("failed to load draft model");
-      }
-    }
-
     print("target_llama_model_n_params:    {}", llama_model_n_params(model_weights_target.get()));
-    if (params.draft_speculative_decoding_is_enabled()) {
-      print("draft_llama_model_n_params:    {}", llama_model_n_params(model_weights_draft.get()));
-    }
 
-    struct llama_context_params ctx_params = llama_context_default_params();
-
-    ctx_params.no_perf = false;
-    ctx_params.n_ctx = params.context_size;
-
-    ctx_target.reset(llama_init_from_model(model_weights_target.get(), ctx_params));
+    ctx_target.reset(llama_init_from_model(model_weights_target.get(), default_ctx_params));
     if (!ctx_target) {
       throw SpectreError("failed to create the llama_context for target");
     }
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), ctx_params));
-      if (!ctx_draft) {
-        throw SpectreError("failed to create the llama_context for draft");
+    auto t = ctx_target.get();
+
+    print("target_llama_n_ctx:        {}", llama_n_ctx(t));
+    print("target_llama_n_ctx_seq:    {}", llama_n_ctx_seq(t));
+    print("target_llama_n_batch:      {}", llama_n_batch(t));
+    print("target_llama_n_ubatch:     {}", llama_n_ubatch(t));
+    print("target_llama_n_seq_max:    {}", llama_n_seq_max(t));
+    print("target_llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_target.get(), nullptr));
+  }
+
+  void validate_vocab_compat() {
+    const auto validate_token_match = [&](const std::string &token_type,
+                                          bool add_target, bool add_draft,
+                                          int id_target, int id_draft) {
+      bool add_mismatch = (add_target != add_draft);
+      bool id_mismatch = (add_target && (id_target != id_draft));
+
+      if (add_mismatch || id_mismatch) {
+        throw SpectreError("{}: draft model {} tokens must match target model to use speculation. "
+                           "add: {} - {}, id: {} - {}\n",
+                           __func__, token_type, add_target, add_draft, id_target, id_draft);
       }
+    };
+
+    // validate beginning-of-sentence (BOS) tokens
+    validate_token_match("bos",
+                         llama_vocab_get_add_bos(vocabulary_target), llama_vocab_get_add_bos(vocabulary_draft),
+                         llama_vocab_bos(vocabulary_target), llama_vocab_bos(vocabulary_draft));
+
+    // validate end-of-sentence (EOS) tokens
+    validate_token_match("eos",
+                         llama_vocab_get_add_eos(vocabulary_target), llama_vocab_get_add_eos(vocabulary_draft),
+                         llama_vocab_eos(vocabulary_target), llama_vocab_eos(vocabulary_draft));
+
+    const int32_t vocab_target_count = llama_vocab_n_tokens(vocabulary_target);
+    const int32_t vocab_draft_count = llama_vocab_n_tokens(vocabulary_draft);
+    const int32_t vocab_diff = std::abs(vocab_target_count - vocab_draft_count);
+
+    constexpr int delta = 128;
+
+    // check vocabulary size delta
+    if (vocab_diff > delta) {
+      throw SpectreError("{}: draft model vocab must closely match target model to use speculation but "
+                         "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}\n",
+                         __func__, vocab_target_count, vocab_draft_count, vocab_diff, delta);
     }
 
-    print("target_llama_n_ctx:        {}", llama_n_ctx(ctx_target.get()));
-    print("target_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_target.get()));
-    print("target_llama_n_batch:      {}", llama_n_batch(ctx_target.get()));
-    print("target_llama_n_ubatch:     {}", llama_n_ubatch(ctx_target.get()));
-    print("target_llama_n_seq_max:    {}", llama_n_seq_max(ctx_target.get()));
+    // validate token content matches
+    const int32_t check_limit = std::min(vocab_target_count, vocab_draft_count);
+    for (int32_t i = delta; i < check_limit; ++i) {
+      std::string_view token_target = llama_vocab_get_text(vocabulary_target, i);
+      std::string_view token_draft = llama_vocab_get_text(vocabulary_draft, i);
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      print("draft_llama_n_ctx:        {}", llama_n_ctx(ctx_draft.get()));
-      print("draft_llama_n_ctx_seq:    {}", llama_n_ctx_seq(ctx_draft.get()));
-      print("draft_llama_n_batch:      {}", llama_n_batch(ctx_draft.get()));
-      print("draft_llama_n_ubatch:     {}", llama_n_ubatch(ctx_draft.get()));
-      print("draft_llama_n_seq_max:    {}", llama_n_seq_max(ctx_draft.get()));
+      if (token_target != token_draft) {
+        throw SpectreError("{}: draft model vocab must match target model to"
+                           " use speculation but token {} content differs\n",
+                           __func__, i);
+      }
     }
   }
 
-  void prepare_prompt(void) {
+  void prepare_prompt() {
     vocabulary_target = llama_model_get_vocab(model_weights_target.get());
 
     if (params.draft_speculative_decoding_is_enabled()) {
       vocabulary_draft = llama_model_get_vocab(model_weights_draft.get());
     }
 
-    const int32_t prompt_target_len = -llama_tokenize(vocabulary_target,             /* vocab */
-                                                      params.prompt.c_str(),         /* text */
-                                                      (int32_t)params.prompt.size(), /* text_len */
-                                                      nullptr,                       /* tokens */
-                                                      0,                             /* n_tokens_max */
-                                                      true,                          /* add_special */
-                                                      true                           /* parse_special */
+    const int32_t prompt_target_len = -llama_tokenize(vocabulary_target,                          /* vocab */
+                                                      params.prompt.c_str(),                      /* text */
+                                                      static_cast<int32_t>(params.prompt.size()), /* text_len */
+                                                      nullptr,                                    /* tokens */
+                                                      0,                                          /* n_tokens_max */
+                                                      true,                                       /* add_special */
+                                                      true                                        /* parse_special */
     );
 
     //
     // place the user's prompt inside the target's kv cache
     //
-    tokens_already_in_target_kv.resize((uint32_t)prompt_target_len);
+    tokens_already_in_target_kv.resize(static_cast<uint32_t>(prompt_target_len));
 
-    int32_t n = llama_tokenize(vocabulary_target,                           /* vocab */
-                               params.prompt.c_str(),                       /* text */
-                               (int32_t)params.prompt.size(),               /* text_len */
-                               tokens_already_in_target_kv.data(),          /* tokens */
-                               (int32_t)tokens_already_in_target_kv.size(), /* n_tokens_max */
-                               true,                                        /* add_special */
-                               true                                         /* parse_special */
+    int32_t n = llama_tokenize(vocabulary_target,                                        /* vocab */
+                               params.prompt.c_str(),                                    /* text */
+                               static_cast<int32_t>(params.prompt.size()),               /* text_len */
+                               tokens_already_in_target_kv.data(),                       /* tokens */
+                               static_cast<int32_t>(tokens_already_in_target_kv.size()), /* n_tokens_max */
+                               true,                                                     /* add_special */
+                               true                                                      /* parse_special */
     );
 
     if (n < 0) {
@@ -882,64 +1100,16 @@ private:
 
     print("\"{}\" ({} tokens)", params.prompt.c_str(), prompt_target_len);
 
+    auto target_kv_size = static_cast<uint32_t>(tokens_already_in_target_kv.size());
+
     // if context size < kv cache size then we've got a problem
-    if (llama_n_ctx(ctx_target.get()) < (uint32_t)tokens_already_in_target_kv.size()) {
-      throw SpectreError("the prompt exceeds the context size ({} tokens, ctx {})", tokens_already_in_target_kv.size(), llama_n_ctx(ctx_target.get()));
+    if (llama_n_ctx(ctx_target.get()) < target_kv_size) {
+      throw SpectreError("the prompt exceeds the context size ({} tokens, ctx {})", target_kv_size, llama_n_ctx(ctx_target.get()));
     }
 
     // if capacity < kv cache size then we've got a problem
-    if (llama_n_batch(ctx_target.get()) < (uint32_t)tokens_already_in_target_kv.size()) {
-      throw SpectreError("the prompt exceeds the batch size ({} tokens, batch {})", tokens_already_in_target_kv.size(), llama_n_batch(ctx_target.get()));
-    }
-
-    if (params.draft_speculative_decoding_is_enabled()) {
-      auto validate_token_match = [&](const std::string &token_type,
-                                      bool add_target, bool add_draft,
-                                      int id_target, int id_draft) {
-        bool add_mismatch = (add_target != add_draft);
-        bool id_mismatch = (add_target && (id_target != id_draft));
-
-        if (add_mismatch || id_mismatch) {
-          throw SpectreError("{}: draft model {} tokens must match target model to use speculation. add: {} - {}, id: {} - {}\n",
-                             __func__, token_type, add_target, add_draft, id_target, id_draft);
-        }
-      };
-
-      // validate beginning-of-sentence (BOS) tokens
-      validate_token_match("bos",
-                           llama_vocab_get_add_bos(vocabulary_target), llama_vocab_get_add_bos(vocabulary_draft),
-                           llama_vocab_bos(vocabulary_target), llama_vocab_bos(vocabulary_draft));
-
-      // validate end-of-sentence (EOS) tokens
-      validate_token_match("eos",
-                           llama_vocab_get_add_eos(vocabulary_target), llama_vocab_get_add_eos(vocabulary_draft),
-                           llama_vocab_eos(vocabulary_target), llama_vocab_eos(vocabulary_draft));
-
-      const int32_t vocab_target_count = llama_vocab_n_tokens(vocabulary_target);
-      const int32_t vocab_draft_count = llama_vocab_n_tokens(vocabulary_draft);
-      const int32_t vocab_diff = std::abs(vocab_target_count - vocab_draft_count);
-
-      constexpr int delta = 128;
-
-      // check vocabulary size delta
-      if (vocab_diff > delta) {
-        throw SpectreError("{}: draft model vocab must closely match target model to use speculation but "
-                           "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}\n",
-                           __func__, vocab_target_count, vocab_draft_count, vocab_diff, delta);
-      }
-
-      // validate token content matches
-      const int32_t check_limit = std::min(vocab_target_count, vocab_draft_count);
-      for (int32_t i = delta; i < check_limit; ++i) {
-        std::string_view token_target = llama_vocab_get_text(vocabulary_target, i);
-        std::string_view token_draft = llama_vocab_get_text(vocabulary_draft, i);
-
-        if (token_target != token_draft) {
-          throw SpectreError("{}: draft model vocab must match target model to"
-                             " use speculation but token {} content differs\n",
-                             __func__, i);
-        }
-      }
+    if (llama_n_batch(ctx_target.get()) < target_kv_size) {
+      throw SpectreError("the prompt exceeds the batch size ({} tokens, batch {})", target_kv_size, llama_n_batch(ctx_target.get()));
     }
 
     for (auto id : tokens_already_in_target_kv) {
@@ -950,79 +1120,69 @@ private:
     print("llama_vocab_type:        {}", static_cast<int>(llama_vocab_type(vocabulary_target)));
   }
 
-  void init_samplers(void) {
-    struct llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
+  void add_default_sample_chains(struct llama_sampler *chain) {
+    if (params.greedy) {
+      // greedy sampler. select the token with the highest probability (logit)
+      // at each step of text generation, leading to deterministic and generally more focused outputs
+      llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    } else {
+      llama_sampler_chain_add(chain, llama_sampler_init_temp(params.temperature));
+      llama_sampler_chain_add(chain, llama_sampler_init_top_k(params.top_k));
+      llama_sampler_chain_add(chain, llama_sampler_init_top_p(params.top_p, 1));
+      llama_sampler_chain_add(chain, llama_sampler_init_dist(params.seed));
+    }
+  }
 
-    sampler_params.no_perf = false;
-
-    sampler_target.reset(llama_sampler_chain_init(sampler_params));
+  void init_target_sampler() {
+    sampler_target.reset(llama_sampler_chain_init(default_sampler_params));
     if (!sampler_target) {
       throw SpectreError("failed to create the sampler_params");
     }
 
-    if (params.greedy) {
-      // greedy sampler. select the token with the highest probability (logit)
-      // at each step of text generation, leading to deterministic and generally more focused outputs
-      llama_sampler_chain_add(sampler_target.get(), llama_sampler_init_greedy());
-    } else {
-      llama_sampler_chain_add(sampler_target.get(), llama_sampler_init_temp(params.temperature));
-      llama_sampler_chain_add(sampler_target.get(), llama_sampler_init_top_k(params.top_k));
-      llama_sampler_chain_add(sampler_target.get(), llama_sampler_init_top_p(params.top_p, 1));
-      llama_sampler_chain_add(sampler_target.get(), llama_sampler_init_dist(params.seed));
+    add_default_sample_chains(sampler_target.get());
+  }
+
+  void init_draft_sampler() {
+    sampler_draft.reset(llama_sampler_chain_init(default_sampler_params));
+    if (!sampler_draft) {
+      throw SpectreError("failed to create draft sampler chain");
     }
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      // context holds the size of batch
-      speculative_batch_target = llama_batch_init(static_cast<int32_t>(llama_n_batch(ctx_target.get())), 0, 1);
+    add_default_sample_chains(sampler_draft.get());
+  }
+
+  void init_llama_batches() {
+    // context holds the size of batch
+    speculative_batch_target = llama_batch_init(static_cast<int32_t>(llama_n_batch(ctx_target.get())), 0, 1);
+
+    if (ds) {
       speculative_batch_draft = llama_batch_init(static_cast<int32_t>(llama_n_batch(ctx_draft.get())), 0, 1);
-
-      sampler_draft.reset(llama_sampler_chain_init(sampler_params));
-      if (!sampler_draft) {
-        throw SpectreError("failed to create draft sampler chain");
-      }
-
-      if (params.greedy) {
-        // greedy sampler. select the token with the highest probability (logit)
-        // at each step of text generation, leading to deterministic and generally more focused outputs
-        llama_sampler_chain_add(sampler_draft.get(), llama_sampler_init_greedy());
-      } else {
-        llama_sampler_chain_add(sampler_draft.get(), llama_sampler_init_temp(params.temperature));
-        llama_sampler_chain_add(sampler_draft.get(), llama_sampler_init_top_k(params.top_k));
-        llama_sampler_chain_add(sampler_draft.get(), llama_sampler_init_top_p(params.top_p, 1));
-        llama_sampler_chain_add(sampler_draft.get(), llama_sampler_init_dist(params.seed));
-      }
     }
   }
 
-  void generate(void) {
-    print("llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_target.get(), nullptr));
-
-    // auto-generate a run-id if none was supplied
-    if (params.run_id.empty()) {
-      const std::string ts = InferenceRunRecorder::iso_timestamp(true);
-      const std::string mode = params.draft_speculative_decoding_is_enabled() ? "spec" : "ar";
-      params.run_id = std::format("{}_{}_seed{}", ts, mode, params.seed);
-    }
-
-    InferenceRunRecorder recorder(params.results_dir, params.run_id, InferenceRunRecorder::iso_timestamp(), params);
-
-    print("writing structured run output to: {}", recorder.dir().string());
-
+  void prefill_target_prefix() {
     llama_synchronize(ctx_target.get());
     if (params.draft_speculative_decoding_is_enabled()) {
       llama_synchronize(ctx_draft.get());
     }
 
-    const int64_t start_time = ggml_time_us();
-    int64_t time_after_prompt = ggml_time_us();
+    recorder.emplace(params.results_dir, params.run_id, InferenceRunRecorder::iso_timestamp(), params);
+    print("writing structured run output to: {}", recorder->dir().string());
+
+    if (!telemetry.energy_available()) {
+      print(GGML_LOG_LEVEL_ERROR, "RAPL energy counter not found at /sys/class/powercap/intel-rapl:0/energy_uj");
+    }
 
     params.tokens_accepted_count = 0;
     params.tokens_drafted_count = 0;
-    params.has_encountered_eos = false; // end-of-sentence
+    params.has_encountered_eos = false;
 
-    // we prefilled target's kv cache with the prompt in the last step
+    tokens_generated_in_round = 0;
+    bonus_tokens_drafted_in_round = 0;
+
+    // we've already filled target's kv cache vector with the prompt
     if (tokens_already_in_target_kv.empty()) {
-      throw SpectreError("prompt_target is empty");
+      throw SpectreError("tokens_already_in_target_kv is empty");
     }
 
     //
@@ -1031,8 +1191,11 @@ private:
     // TODO: redundant for autoregressive runs but simplifies speculative verification
     //
     auto t = tokens_already_in_target_kv.data();
-    auto n = (int32_t)tokens_already_in_target_kv.size() - 1;
+    auto n = static_cast<int32_t>(tokens_already_in_target_kv.size()) - 1;
+
     batch = llama_batch_get_one(t, n);
+
+    telemetry.begin_measuring(telemetry.prompt);
 
     // evaluate prompt => update KV cache and compute logits for the prompt
     if (llama_decode(ctx_target.get(), batch)) {
@@ -1040,11 +1203,11 @@ private:
     }
 
     llama_synchronize(ctx_target.get());
-    if (params.draft_speculative_decoding_is_enabled()) {
+    if (ds) {
       llama_synchronize(ctx_draft.get());
     }
-
-    time_after_prompt = ggml_time_us();
+    telemetry.end_measuring(telemetry.prompt);
+    telemetry.begin_measuring(telemetry.decode);
 
     // sample starting from the last token of the prompt
     pending_token = tokens_already_in_target_kv.back();
@@ -1054,296 +1217,265 @@ private:
 
     // place the very last token to a new batch
     batch = llama_batch_get_one(&pending_token, 1);
+  }
+
+  void generate_speculative() {
+    /* ====================== */
+    /*  speculative decoding  */
+    /* ====================== */
+
+    if (ds && ns) {
+      print("speculative decoding using draft model and ngram cache is enabled\n");
+    } else if (ds) {
+      print("speculative decoding using draft model is enabled\n");
+    } else if (ns) {
+      print("speculative decoding using ngram cache is enabled\n");
+    }
+
+    int speculative_round = 0;
+
+    auto print_model_desc = [](std::string_view label, const auto &weights) {
+      std::array<char, 1024> buf{};
+      int32_t len = llama_model_desc(weights.get(), buf.data(), buf.size());
+
+      if (len > 0) {
+        size_t l = std::min(static_cast<size_t>(len), buf.size() - 1);
+        std::string_view desc(buf.data(), l);
+        print("{:<13}:    {}", label, desc);
+      }
+    };
+
+    print_model_desc("target_model", model_weights_target);
+
+    if (params.draft_speculative_decoding_is_enabled()) {
+      print_model_desc("draft_model", model_weights_draft);
+    }
 
     // get a pointer to target's context
     llama_memory_t mem_target = llama_get_memory(ctx_target.get());
 
-    /// ======================
-    ///  speculative decoding
-    /// ======================
+    while (!params.has_encountered_eos) /* decoding event loop that only stops when we encounter end-of-sentence */
+    {
 
-    int speculative_round = 0;
-    int tokens_generated_in_round = 0;
-    int bonus_tokens_drafted_in_round = 0;
+      //
+      // append the pending target token immediately after sequence already cached prefix
+      // we use the KV cache as the position source of truth after rollback operations
+      //
+      const llama_pos max_cached_position = llama_memory_seq_pos_max(mem_target, 0);
+      llama_pos next_target_token_position = (max_cached_position < 0) ? 0 : (max_cached_position + 1);
 
-    if (params.speculative_decoding_is_enabled()) {
-      print("speculative decoding using {}{} is enabled",
-            params.draft_speculative_decoding_is_enabled() ? "draft model" : "",
-            params.ngram_speculative_decoding_is_enabled() ? " and an ngram cache" : "");
+      //
+      // sample proposed tokens
+      //
+      // they may come from a draft model or n-gram and are not yet accepted
+      //
+      std::vector<llama_token> proposed_tokens;
 
-      {
-        std::array<char, 1024> buf{};
-        llama_model_desc(model_weights_target.get(), buf.data(), buf.size());
-        print("target_model :    {}", buf.data());
-
-        if (params.draft_speculative_decoding_is_enabled()) {
-          llama_model_desc(model_weights_draft.get(), buf.data(), buf.size());
-          print("draft_model  :    {}", buf.data());
-        }
+      // n-gram first if --ngram is set, otherwise (or on miss) the draft model
+      if (params.ngram) {
+        proposed_tokens = draft_using_ngram_simple();
       }
 
-      while (!params.has_encountered_eos) /* decoding event loop that only stops when we encounter end-of-sentence */
-      {
+      // fallback
+      if (proposed_tokens.empty() && ds) {
+        proposed_tokens = draft_using_draft_model();
+      }
 
-        //
-        // append the pending target token immediately after sequence already cached prefix
-        // we use the KV cache as the position source of truth after rollback operations
-        //
-        const llama_pos max_cached_position = llama_memory_seq_pos_max(mem_target, 0);
-        llama_pos next_target_token_position = (max_cached_position < 0) ? 0 : (max_cached_position + 1);
+      if (proposed_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
+        proposed_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
+      } else if (proposed_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
+        proposed_tokens.clear();
+      }
 
-        //
-        // sample proposed tokens
-        //
-        // they may come from a draft model or n-gram and are not yet accepted
-        //
-        std::vector<llama_token> proposed_tokens;
+      // reset target batch so we can reuse it on later iterations
+      reset_batch(speculative_batch_target);
 
-        // n-gram first if --ngram is set, otherwise (or on miss) the draft model
-        if (params.ngram) {
-          proposed_tokens = draft_using_ngram();
-        }
+      // add pending_token to the batch we send to target
+      create_new_batch(speculative_batch_target,
+                       static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
+                       pending_token,
+                       next_target_token_position);
 
-        // fallback
-        if (proposed_tokens.empty()) {
-          proposed_tokens = draft_using_draft_model();
-        }
+      next_target_token_position += 1;
 
-        if (proposed_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
-          proposed_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
-        } else if (proposed_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
-          proposed_tokens.clear();
-        }
-
-        // reset target batch so we can reuse it on later iterations
-        reset_batch(speculative_batch_target);
-
-        // add pending_token to the batch we send to target
+      // add drafted tokens to the target
+      for (std::size_t i = 0; i < proposed_tokens.size(); ++i) {
         create_new_batch(speculative_batch_target,
                          static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
-                         pending_token,
-                         next_target_token_position);
+                         proposed_tokens[i],
+                         next_target_token_position + (llama_pos)i);
+      }
 
-        next_target_token_position += 1;
+      //
+      // evaluate the batch => update KV cache and compute logits for the batch
+      //
+      if (llama_decode(ctx_target.get(), speculative_batch_target)) {
+        throw SpectreError("target speculative verification decode failed");
+      }
 
-        // add drafted tokens to the target
-        for (std::size_t i = 0; i < proposed_tokens.size(); ++i) {
-          create_new_batch(speculative_batch_target,
-                           static_cast<int32_t>(llama_n_batch(ctx_target.get())), /* batch capacity */
-                           proposed_tokens[i],
-                           next_target_token_position + (llama_pos)i);
+      //
+      // do the actual verification of the sampled tokens
+      //
+      auto verifications = verify_draft_proposals(proposed_tokens);
+
+      auto &kind = verifications.kind;
+      auto &target = verifications.target_token;
+      auto &accepted = verifications.accepted_drafts;
+      auto &rejected_proposal_index = verifications.rejected_proposal_index;
+
+      params.tokens_accepted_count += static_cast<int64_t>(accepted.size());
+      params.tokens_drafted_count += static_cast<int64_t>(proposed_tokens.size());
+
+      next_target_token_position += static_cast<llama_pos>(accepted.size());
+
+      if (kind == VerificationKind::Bonus) {
+        bonus_tokens_drafted_in_round += 1;
+      }
+
+      for (std::size_t i = 0; i < accepted.size(); ++i) /* iterate over the accepted tokens and print them */
+      {
+
+        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)i), accepted[i]);
+        const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
+
+        std::optional<std::size_t> position_in_draft = std::optional<std::size_t>{i};
+
+        double draft_probability = std::numeric_limits<double>::quiet_NaN();
+
+        if (position_in_draft && *position_in_draft < last_draft_probabilities.size()) {
+          draft_probability = last_draft_probabilities[*position_in_draft];
         }
 
-        //
-        // evaluate the batch => update KV cache and compute logits for the batch
-        //
-        if (llama_decode(ctx_target.get(), speculative_batch_target)) {
-          throw SpectreError("target speculative verification decode failed");
-        }
+        recorder->record_token(speculative_round,             /* call */
+                               "draft",                       /* source */
+                               position_in_draft,             /* pos_in_draft */
+                               static_cast<int>(accepted[i]), /* token_id */
+                               prob,                          /* p_target */
+                               std::nullopt,                  /* rejected_token_id */
+                               draft_probability,             /* p_draft */
+                               logit,                         /* logit */
+                               logprob                        /* logprob */
+        );
 
         //
-        // do the actual verification of the sampled tokens
-        //
-        auto verifications = verify_draft_proposals(proposed_tokens);
-
-        auto &kind = verifications.kind;
-        auto &target = verifications.target_token;
-        auto &accepted = verifications.accepted_drafts;
-        auto &rejected_proposal_index = verifications.rejected_proposal_index;
-
-        params.tokens_accepted_count += static_cast<int64_t>(accepted.size());
-        params.tokens_drafted_count += static_cast<int64_t>(proposed_tokens.size());
-
-        next_target_token_position += static_cast<llama_pos>(accepted.size());
-
-        if (kind == VerificationKind::Bonus) {
-          bonus_tokens_drafted_in_round += 1;
-        }
-
-        for (std::size_t i = 0; i < accepted.size(); ++i) /* iterate over the accepted tokens and print them */
-        {
-
-          auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)i), accepted[i]);
-          const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
-
-          std::optional<std::size_t> position_in_draft = std::optional<std::size_t>{i};
-
-          double draft_probability = std::numeric_limits<double>::quiet_NaN();
-
-          if (position_in_draft && *position_in_draft < last_draft_probabilities.size()) {
-            draft_probability = last_draft_probabilities[*position_in_draft];
-          }
-
-          recorder.record_token(speculative_round,             /* call */
-                                "draft",                       /* source */
-                                position_in_draft,             /* pos_in_draft */
-                                static_cast<int>(accepted[i]), /* token_id */
-                                prob,                          /* p_target */
-                                std::nullopt,                  /* rejected_token_id */
-                                draft_probability,             /* p_draft */
-                                logit,                         /* logit */
-                                logprob                        /* logprob */
-          );
-
-          //
-          // we decoded the pending_token so now we add it to the target's KV cache
-          //
-          tokens_already_in_target_kv.push_back(pending_token);
-
-          //
-          // for now temporary, pending_token is the accepted token we are currently on
-          //
-          pending_token = accepted[i];
-
-          // first increment overall generated tokens then check
-          tokens_generated_in_round += 1;
-
-          // is pending_token end-of-generation?
-          if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
-            params.has_encountered_eos = true;
-            break;
-          }
-
-          // hard cap on tokens (treated like EOS for the purposes of clean finalize)
-          if (params.max_generated_tokens > 0 &&
-              static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
-            params.has_encountered_eos = true;
-            break;
-          }
-
-          std::string token = token_to_string(vocabulary_target, pending_token);
-
-          // rotating ANSI color for the token:
-          // cyan -> magenta -> blue -> yellow -> green -> red
-          static constexpr int colors[] = {36, 35, 34, 33, 32, 31};
-          static constexpr std::size_t col = 24; // pad token+brackets to this column
-
-          const int color = colors[i % std::size(colors)];
-          const std::size_t visible = token.size() + 2; // 2 chars for the surrounding '|'
-          const std::string pad(visible < col ? col - visible : 1, ' ');
-
-          print("\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
-                color, token, pad,
-                static_cast<int>(accepted.size()),
-                static_cast<int>(proposed_tokens.size()),
-                pending_token);
-        }
-
-        //
-        // commit the last pending token into the KV mirror (the last accepted draft, or
-        // the round's original pending if no draft was kept)
+        // we decoded the pending_token so now we add it to the target's KV cache
         //
         tokens_already_in_target_kv.push_back(pending_token);
 
-        // drafts already hit EOS / n_predict: do not emit the correction/bonus
-        if (!params.has_encountered_eos) {
-          pending_token = target;
-          tokens_generated_in_round += 1;
+        //
+        // for now temporary, pending_token is the accepted token we are currently on
+        //
+        pending_token = accepted[i];
 
-          const std::string_view source = [](VerificationKind k) {
-            switch (k) {
-            case Bonus:
-              return "bonus";
-            case Correction:
-              return "correction";
-            case Invalid:
-            default:
-              return "draft";
-            }
-          }(kind);
+        // first increment overall generated tokens then check
+        tokens_generated_in_round += 1;
 
-          auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)accepted.size()), target);
-          const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
+        // is pending_token end-of-generation?
+        if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
+          params.has_encountered_eos = true;
+          break;
+        }
 
-          std::optional<std::size_t> position_in_draft;
-          std::optional<int> rejected_token_id;
-          double draft_probability = std::numeric_limits<double>::quiet_NaN();
+        // hard cap on tokens (treated like EOS for the purposes of clean finalize)
+        if (params.max_generated_tokens > 0 &&
+            static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
+          params.has_encountered_eos = true;
+          break;
+        }
 
-          // correction: token_id is X, rejected_token_id is H, p_draft is q(H)
-          if (kind == VerificationKind::Correction && rejected_proposal_index.has_value() &&
-              *rejected_proposal_index < proposed_tokens.size()) {
-            position_in_draft = rejected_proposal_index;
-            rejected_token_id = static_cast<int>(proposed_tokens[*rejected_proposal_index]);
-            if (*position_in_draft < last_draft_probabilities.size()) {
-              draft_probability = last_draft_probabilities[*position_in_draft];
-            }
+        std::string token = token_to_string(vocabulary_target, pending_token);
+
+        // rotating ANSI color for the token:
+        // cyan -> magenta -> blue -> yellow -> green -> red
+        static constexpr int colors[] = {36, 35, 34, 33, 32, 31};
+        static constexpr std::size_t col = 24; // pad token+brackets to this column
+
+        const int color = colors[i % std::size(colors)];
+        const std::size_t visible = token.size() + 2; // 2 chars for the surrounding '|'
+        const std::string pad(visible < col ? col - visible : 1, ' ');
+
+        print("\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
+              color, token, pad,
+              static_cast<int>(accepted.size()),
+              static_cast<int>(proposed_tokens.size()),
+              pending_token);
+      }
+
+      //
+      // commit the last pending token into the KV mirror (the last accepted draft, or
+      // the round's original pending if no draft was kept)
+      //
+      tokens_already_in_target_kv.push_back(pending_token);
+
+      // drafts already hit EOS / n_predict: do not emit the correction/bonus
+      if (!params.has_encountered_eos) {
+        pending_token = target;
+        tokens_generated_in_round += 1;
+
+        const std::string_view source = [](VerificationKind k) {
+          switch (k) {
+          case Bonus:
+            return "bonus";
+          case Correction:
+            return "correction";
+          case Invalid:
+          default:
+            return "draft";
           }
+        }(kind);
 
-          recorder.record_token(speculative_round,        /* call */
-                                source,                   /* source */
-                                position_in_draft,        /* pos_in_draft */
-                                static_cast<int>(target), /* token_id */
-                                prob,                     /* p_target */
-                                rejected_token_id,        /* rejected_token_id */
-                                draft_probability,        /* p_draft */
-                                logit,                    /* logit */
-                                logprob                   /* logprob */
-          );
+        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)accepted.size()), target);
+        const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
 
-          if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
-            params.has_encountered_eos = true;
-          } else if (params.max_generated_tokens > 0 &&
-                     static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
-            params.has_encountered_eos = true;
+        std::optional<std::size_t> position_in_draft;
+        std::optional<int> rejected_token_id;
+        double draft_probability = std::numeric_limits<double>::quiet_NaN();
+
+        // correction: token_id is X, rejected_token_id is H, p_draft is q(H)
+        if (kind == VerificationKind::Correction && rejected_proposal_index.has_value() &&
+            *rejected_proposal_index < proposed_tokens.size()) {
+          position_in_draft = rejected_proposal_index;
+          rejected_token_id = static_cast<int>(proposed_tokens[*rejected_proposal_index]);
+          if (*position_in_draft < last_draft_probabilities.size()) {
+            draft_probability = last_draft_probabilities[*position_in_draft];
           }
         }
 
-        llama_memory_seq_rm(mem_target, 0, next_target_token_position, -1);
+        recorder->record_token(speculative_round,        /* call */
+                               source,                   /* source */
+                               position_in_draft,        /* pos_in_draft */
+                               static_cast<int>(target), /* token_id */
+                               prob,                     /* p_target */
+                               rejected_token_id,        /* rejected_token_id */
+                               draft_probability,        /* p_draft */
+                               logit,                    /* logit */
+                               logprob                   /* logprob */
+        );
 
-        recorder.record_round(static_cast<int>(proposed_tokens.size()),
-                              static_cast<int>(accepted.size()),
-                              rejected_proposal_index);
-
-        speculative_round += 1;
+        if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
+          params.has_encountered_eos = true;
+        } else if (params.max_generated_tokens > 0 &&
+                   static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
+          params.has_encountered_eos = true;
+        }
       }
 
-      std::cout << std::endl;
+      llama_memory_seq_rm(mem_target, 0, next_target_token_position, -1);
 
-      llama_synchronize(ctx_target.get());
-      if (params.draft_speculative_decoding_is_enabled()) {
-        llama_synchronize(ctx_draft.get());
-      }
+      recorder->record_round(static_cast<int>(proposed_tokens.size()),
+                             static_cast<int>(accepted.size()),
+                             rejected_proposal_index);
 
-      const int64_t t_end = ggml_time_us();
-      const double prompt_ms = static_cast<double>(time_after_prompt - start_time) / 1000.0;
-      const double decode_ms = static_cast<double>(t_end - time_after_prompt) / 1000.0;
-      const float speed = static_cast<float>(tokens_generated_in_round) /
-                          std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
-
-      print("decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
-            tokens_generated_in_round,
-            decode_ms / 1000.0,
-            speed,
-            prompt_ms,
-            decode_ms);
-
-      if (params.tokens_drafted_count > 0) {
-        print("speculative: n_drafted = {}, n_accept = {}, accept = {:.2f}%",
-              params.tokens_drafted_count, params.tokens_accepted_count,
-              100.0 * static_cast<double>(params.tokens_accepted_count) / static_cast<double>(params.tokens_drafted_count));
-      }
-
-      recorder.finalize(static_cast<int64_t>(tokens_generated_in_round),
-                        params.tokens_drafted_count,
-                        params.tokens_accepted_count,
-                        bonus_tokens_drafted_in_round,
-                        prompt_ms,
-                        decode_ms);
-
-      print("wrote {} and {}",
-            (recorder.dir() / "meta.json").string(),
-            (recorder.dir() / "tokens.csv").string());
-
-      llama_perf_sampler_print(sampler_target.get());
-      llama_perf_context_print(ctx_target.get());
-      llama_perf_context_print(ctx_draft.get());
-
-      return;
+      speculative_round += 1;
     }
 
-    /// =========================
-    ///  autoregressive decoding
-    /// =========================
+    std::cout << std::endl;
+  }
+
+  void generate_autoregressive() {
+    /* ========================= */
+    /*  autoregressive decoding  */
+    /* ========================= */
 
     for (;;) {
       //
@@ -1359,15 +1491,15 @@ private:
       auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), -1), pending_token);
       const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
 
-      recorder.record_token(static_cast<int>(tokens_generated_in_round), /* call */
-                            "ar",                                        /* source */
-                            std::nullopt,                                /* pos_in_draft */
-                            static_cast<int>(pending_token),             /* token_id */
-                            prob,                                        /* p_target */
-                            std::nullopt,                                /* rejected_token_id */
-                            std::numeric_limits<double>::quiet_NaN(),    /* p_draft */
-                            logit,                                       /* logit */
-                            logprob                                      /* logprob */
+      recorder->record_token(static_cast<int>(tokens_generated_in_round), /* call */
+                             "ar",                                        /* source */
+                             std::nullopt,                                /* pos_in_draft */
+                             static_cast<int>(pending_token),             /* token_id */
+                             prob,                                        /* p_target */
+                             std::nullopt,                                /* rejected_token_id */
+                             std::numeric_limits<double>::quiet_NaN(),    /* p_draft */
+                             logit,                                       /* logit */
+                             logprob                                      /* logprob */
       );
 
       tokens_generated_in_round += 1;
@@ -1378,7 +1510,7 @@ private:
       }
 
       // hard cap on tokens
-      if (params.max_generated_tokens > 0 && (int64_t)tokens_generated_in_round >= params.max_generated_tokens) {
+      if (params.max_generated_tokens > 0 && static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
         break;
       }
 
@@ -1391,48 +1523,67 @@ private:
     }
 
     std::cout << std::endl;
+  }
 
+  void finalize_run() {
     llama_synchronize(ctx_target.get());
-    if (params.draft_speculative_decoding_is_enabled()) {
+    if (ds) {
       llama_synchronize(ctx_draft.get());
     }
+    telemetry.end_measuring(telemetry.decode);
 
-    const int64_t t_end = ggml_time_us();
-
-    const double prompt_ms = time_after_prompt > 0
-                                 ? static_cast<double>(time_after_prompt - start_time) / 1000.0
-                                 : 0.0;
-
-    const double decode_ms = time_after_prompt > 0
-                                 ? static_cast<double>(t_end - time_after_prompt) / 1000.0
-                                 : static_cast<double>(t_end - start_time) / 1000.0;
+    const double prompt_ms = telemetry.prompt.milliseconds();
+    const double decode_ms = telemetry.decode.milliseconds();
 
     const float speed = static_cast<float>(tokens_generated_in_round) /
                         std::max(static_cast<float>(decode_ms / 1000.0), 1e-6f);
 
-    print("decoded {} tokens in {:.3f} s,"
-          "speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
+    print("decoded {} tokens in {:.3f} s, speed: {:.2f} t/s (prompt {:.1f} ms, decode {:.1f} ms)",
           tokens_generated_in_round,
           decode_ms / 1000.0,
           speed,
           prompt_ms,
           decode_ms);
 
-    recorder.finalize(static_cast<int64_t>(tokens_generated_in_round), /* tokens_generated_in_round */
-                      0,                                               /* tokens_drafted_count */
-                      0,                                               /* drafts_accepted_count */
-                      0,                                               /* bonus_tokens_drafted_in_round */
-                      prompt_ms,                                       /* prompt_ms */
-                      decode_ms                                        /* decode_ms */
-    );
+    if (params.tokens_drafted_count > 0) {
+      print("speculative: n_drafted = {}, n_accept = {}, accept = {:.2f}%",
+            params.tokens_drafted_count, params.tokens_accepted_count,
+            100.0 * static_cast<double>(params.tokens_accepted_count) /
+                static_cast<double>(params.tokens_drafted_count));
+    }
+
+    const auto energy_j = telemetry.decode.total_joules;
+    const auto j_per_token = telemetry.decode_joules_per_token(tokens_generated_in_round);
+    const auto average_wattage = telemetry.decode.average_wattage;
+
+    if (energy_j) {
+      print("energy (decode window, {}): {:.3f} J, {:.4f} J/token, {:.2f} W avg",
+            telemetry.energy_source(),
+            *energy_j,
+            j_per_token.value_or(0.0),
+            average_wattage.value_or(0.0));
+    }
+
+    recorder->finalize(static_cast<int64_t>(tokens_generated_in_round),
+                       params.tokens_drafted_count,
+                       params.tokens_accepted_count,
+                       static_cast<int64_t>(bonus_tokens_drafted_in_round),
+                       prompt_ms,
+                       decode_ms,
+                       energy_j,
+                       j_per_token,
+                       average_wattage,
+                       telemetry.energy_source());
 
     print("wrote {} and {}",
-          (recorder.dir() / "meta.json").string(),
-          (recorder.dir() / "tokens.csv").string());
+          (recorder->dir() / "meta.json").string(),
+          (recorder->dir() / "tokens.csv").string());
 
-    // __asm volatile("int3");
     llama_perf_sampler_print(sampler_target.get());
     llama_perf_context_print(ctx_target.get());
+    if (ds) {
+      llama_perf_context_print(ctx_draft.get());
+    }
   }
 
   void reset_batch(llama_batch &batch) {
@@ -1522,7 +1673,18 @@ private:
   //                               31      38
   //                          match_pos  n-gram
   //
-  std::vector<llama_token> draft_using_ngram() {
+
+  // TODO
+  std::vector<llama_token> draft_using_ngram_cache() {
+    return {};
+  }
+
+  // TODO
+  std::vector<llama_token> draft_using_ngram_mod() {
+    return {};
+  }
+
+  std::vector<llama_token> draft_using_ngram_simple() {
     const auto &tokens = tokens_already_in_target_kv;
     const llama_token sampled = pending_token; // sampled but not decoded
 
@@ -1585,7 +1747,7 @@ private:
   //
   // propose new tokens using a secondary smaller model
   //
-  std::vector<llama_token> draft_using_draft_model(void) {
+  std::vector<llama_token> draft_using_draft_model() {
     llama_memory_t mem_draft = llama_get_memory(ctx_draft.get());
 
     const auto draft_kv_cache_len = [&]() -> std::size_t {
@@ -1826,10 +1988,50 @@ public:
   }
 
   int run() {
-    load_models();
+
+#if !defined(NDEBUG)
+    print(GGML_LOG_LEVEL_WARN, "asserts enabled, performance may be affected");
+#endif
+
+#if (defined(_MSC_VER) && defined(_DEBUG)) || (!defined(_MSC_VER) && !defined(__OPTIMIZE__))
+    print(GGML_LOG_LEVEL_WARN, "debug build, performance may be affected");
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    print(GGML_LOG_LEVEL_WARN, "sanitizer enabled, performance may be affected");
+#endif
+
+    init_backend();
+
+    load_target();
+    if (ds) {
+      load_draft();
+    }
+
     prepare_prompt();
-    init_samplers();
-    generate();
+
+    if (ds) {
+      validate_vocab_compat();
+    }
+
+    init_target_sampler();
+    if (ds || ns) {
+      init_llama_batches();
+    }
+    if (ds) {
+      init_draft_sampler();
+    }
+
+    prefill_target_prefix();
+
+    if (ds || ns) {
+      generate_speculative();
+    } else {
+      generate_autoregressive();
+    }
+
+    finalize_run();
+
     return 0;
   }
 };
