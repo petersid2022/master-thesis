@@ -1,5 +1,5 @@
 #include <array>
-#include <cassert>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -12,10 +12,13 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <nvml.h>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -32,6 +35,197 @@ public:
       : std::runtime_error(std::format(fmt, std::forward<Args>(args)...)) {}
 };
 
+class NvmlGpu {
+public:
+  enum class Mode { Unavailable,
+                    EnergyCounter,
+                    PowerDraw };
+
+  NvmlGpu() {
+    if (nvmlInit_v2() != NVML_SUCCESS) {
+      return;
+    }
+    initialized_ = true;
+
+    if (nvmlDeviceGetHandleByIndex_v2(0, &device_) != NVML_SUCCESS) {
+      return;
+    }
+
+    char buf[NVML_DEVICE_NAME_BUFFER_SIZE]{};
+    if (nvmlDeviceGetName(device_, buf, NVML_DEVICE_NAME_BUFFER_SIZE) == NVML_SUCCESS) {
+      name_ = buf;
+    }
+
+    unsigned long long millijoules{};
+    if (nvmlDeviceGetTotalEnergyConsumption(device_, &millijoules) == NVML_SUCCESS) {
+      mode_ = Mode::EnergyCounter;
+      return;
+    }
+
+    unsigned int milliwatts{};
+    if (nvmlDeviceGetPowerUsage(device_, &milliwatts) == NVML_SUCCESS) {
+      mode_ = Mode::PowerDraw;
+    }
+  }
+
+  NvmlGpu(const NvmlGpu &) = delete;
+  NvmlGpu &operator=(const NvmlGpu &) = delete;
+
+  ~NvmlGpu() {
+    stop_sampling();
+    if (initialized_) {
+      nvmlShutdown();
+    }
+  }
+
+  bool available() const { return mode_ != Mode::Unavailable; }
+
+  Mode mode() const { return mode_; }
+
+  const std::string &name() const { return name_; }
+
+  const char *source_tag() const {
+    switch (mode_) {
+    case Mode::EnergyCounter:
+      return "nvml:0";
+    case Mode::PowerDraw:
+      return "nvml:0:power.draw";
+    case Mode::Unavailable:
+      return "nvml:0=unavailable";
+    }
+    return "nvml:0=unavailable";
+  }
+
+  void begin_window() {
+    last_joules_.reset();
+    last_samples_ = 0;
+    switch (mode_) {
+    case Mode::EnergyCounter:
+      energy_start_mj_ = read_mj();
+      break;
+    case Mode::PowerDraw:
+      start_sampling();
+      break;
+    case Mode::Unavailable:
+      break;
+    }
+  }
+
+  void end_window() {
+    switch (mode_) {
+    case Mode::EnergyCounter: {
+      const auto end_mj = read_mj();
+      if (energy_start_mj_ && end_mj) {
+        last_joules_ = static_cast<double>(unsigned_delta(*energy_start_mj_, *end_mj)) / 1000.0;
+      }
+      break;
+    }
+    case Mode::PowerDraw:
+      last_joules_ = stop_sampling();
+      break;
+    case Mode::Unavailable:
+      break;
+    }
+  }
+
+  std::optional<double> last_joules() const { return last_joules_; }
+  std::size_t last_samples() const { return last_samples_; }
+
+private:
+  struct Sample {
+    std::chrono::steady_clock::time_point t{};
+    unsigned int milliwatts{};
+  };
+
+  static constexpr auto kSamplePeriod = std::chrono::milliseconds(50);
+
+  std::optional<std::uint64_t> read_mj() const {
+    unsigned long long millijoules{};
+    if (nvmlDeviceGetTotalEnergyConsumption(device_, &millijoules) != NVML_SUCCESS) {
+      return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(millijoules);
+  }
+
+  void push_sample() {
+    unsigned int milliwatts{};
+    if (nvmlDeviceGetPowerUsage(device_, &milliwatts) != NVML_SUCCESS) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(mu_);
+    samples_.push_back({now, milliwatts});
+  }
+
+  void start_sampling() {
+    stop_sampling();
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      samples_.clear();
+    }
+    running_.store(true, std::memory_order_relaxed);
+    push_sample();
+    sampler_ = std::thread([this] {
+      while (running_.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(kSamplePeriod);
+        if (!running_.load(std::memory_order_relaxed)) {
+          break;
+        }
+        push_sample();
+      }
+    });
+  }
+
+  std::optional<double> stop_sampling() {
+    running_.store(false, std::memory_order_relaxed);
+    if (sampler_.joinable()) {
+      sampler_.join();
+    }
+    if (mode_ != Mode::PowerDraw) {
+      return std::nullopt;
+    }
+    push_sample();
+    std::lock_guard<std::mutex> lock(mu_);
+    last_samples_ = samples_.size();
+    return integrate_joules(samples_);
+  }
+
+  static std::optional<double> integrate_joules(const std::vector<Sample> &samples) {
+    if (samples.size() < 2) {
+      return std::nullopt;
+    }
+    double joules = 0.0;
+    for (std::size_t i = 1; i < samples.size(); ++i) {
+      const double dt = std::chrono::duration<double>(samples[i].t - samples[i - 1].t).count();
+      const double w0 = static_cast<double>(samples[i - 1].milliwatts) / 1000.0;
+      const double w1 = static_cast<double>(samples[i].milliwatts) / 1000.0;
+      joules += 0.5 * (w0 + w1) * dt;
+    }
+    return joules;
+  }
+
+  static std::uint64_t unsigned_delta(std::uint64_t start, std::uint64_t end) {
+    if (end >= start) {
+      return end - start;
+    }
+    return (std::numeric_limits<std::uint64_t>::max() - start) + end + 1;
+  }
+
+  bool initialized_{};
+  Mode mode_{Mode::Unavailable};
+  nvmlDevice_t device_{};
+  std::string name_;
+
+  std::optional<std::uint64_t> energy_start_mj_;
+  std::optional<double> last_joules_;
+  std::size_t last_samples_{};
+
+  std::atomic<bool> running_{false};
+  std::mutex mu_;
+  std::vector<Sample> samples_;
+  std::thread sampler_;
+};
+
 class InferenceTelemetry {
 public:
   struct Telemetry {
@@ -43,8 +237,11 @@ public:
     std::optional<std::uint64_t> end_ujoules;
 
     double total_seconds{};
+    std::optional<double> cpu_joules;
+    std::optional<double> gpu_joules;
     std::optional<double> total_joules;
     std::optional<double> average_wattage;
+    std::size_t gpu_samples{};
 
     double milliseconds() const { return total_seconds * 1000.0; }
   };
@@ -62,31 +259,60 @@ public:
     }
   }
 
-  bool energy_available() const { return rapl_available; }
+  bool energy_available() const { return rapl_available || nvml_.available(); }
 
-  const char *energy_source() const {
-    return rapl_available ? "intel-rapl:0" : "unavailable";
+  // primary meter for energy_j
+  // NVML GPU if it works, else RAPL
+  std::string energy_source() const {
+    if (nvml_.available()) {
+      return nvml_.source_tag();
+    }
+    if (rapl_available) {
+      return "intel-rapl:0";
+    }
+    return "unavailable";
   }
+
+  std::string energy_detail() const {
+    std::string detail;
+    detail += rapl_available ? "intel-rapl:0" : "intel-rapl:0=unavailable";
+    detail += "  ";
+    detail += nvml_.source_tag();
+    if (nvml_.available() && !nvml_.name().empty()) {
+      detail += " (";
+      detail += nvml_.name();
+      detail += ")";
+    }
+    return detail;
+  }
+
+  const std::string &gpu_name() const { return nvml_.name(); }
 
   void begin_measuring(Telemetry &s) {
     s = Telemetry{};
     s.start_ujoules = read_energy_uj();
+    nvml_.begin_window();
     s.start_time = std::chrono::steady_clock::now();
   }
 
   void end_measuring(Telemetry &s) {
     s.end_time = std::chrono::steady_clock::now();
+    nvml_.end_window();
     s.end_ujoules = read_energy_uj();
 
     s.total_seconds = std::chrono::duration<double>(s.end_time - s.start_time).count();
+    s.gpu_joules = nvml_.last_joules();
+    s.gpu_samples = nvml_.last_samples();
 
     if (s.start_ujoules && s.end_ujoules) {
       if (auto delta_uj = energy_delta_uj(*s.start_ujoules, *s.end_ujoules)) {
-        s.total_joules = static_cast<double>(*delta_uj) / 1e6;
-        if (s.total_seconds > 0.0) {
-          s.average_wattage = *s.total_joules / s.total_seconds;
-        }
+        s.cpu_joules = static_cast<double>(*delta_uj) / 1e6;
       }
+    }
+
+    s.total_joules = s.gpu_joules ? s.gpu_joules : s.cpu_joules;
+    if (s.total_joules && s.total_seconds > 0.0) {
+      s.average_wattage = *s.total_joules / s.total_seconds;
     }
   }
 
@@ -101,6 +327,7 @@ private:
   static constexpr const char *kRaplEnergyPath = "/sys/class/powercap/intel-rapl:0/energy_uj";
   static constexpr const char *kRaplMaxRangePath = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj";
 
+  NvmlGpu nvml_{};
   bool rapl_available{};
   std::uint64_t rapl_max_range_uj{};
 
@@ -131,8 +358,8 @@ class TerminalColor {
   const char *code;
 
   static bool should_color() {
-    static const bool is_terminal = isatty(fileno(stdout));
-    return is_terminal;
+    static const bool tty = isatty(fileno(stdout));
+    return tty;
   }
 
 public:
@@ -273,10 +500,10 @@ struct InferenceParameters {
   // length of the lookup pattern (n-gram)
   // lower values fire more often on short prompts,
   // higher values reduce false positives on long prompts
-  int32_t n_gram_size = 2;
+  int32_t n_gram_size = 12;
 
   // maximum length of the proposed draft (m-gram) following an n-gram hit
-  int32_t m_gram_size = 12;
+  int32_t m_gram_size = 64;
 
   std::string prompt = "Write a Python class called Record with 20 properties: id, name, email,"
                        "phone, address, city, state, zip_code, country, age, salary, department,"
@@ -290,6 +517,7 @@ struct InferenceParameters {
 
   std::string run_id; // auto-generated if empty
   std::string results_dir = "results/spectre";
+  bool verbose = false; // per-round recap on stdout (off = generated text only)
 
   /// =================================
   ///  speculative decoding parameters
@@ -315,16 +543,55 @@ struct InferenceParameters {
   }
 };
 
+enum SpeculationAlgorithm {
+  NgramSimple,
+  NgramMod,
+  NgramCache,
+  DraftBased,
+  Invalid
+};
+
+static constexpr std::string_view speculation_algorithm_name(SpeculationAlgorithm algorithm) {
+  switch (algorithm) {
+  case SpeculationAlgorithm::NgramSimple:
+    return "ngram";
+  case SpeculationAlgorithm::NgramMod:
+    return "ngram-mod";
+  case SpeculationAlgorithm::NgramCache:
+    return "ngram-cache";
+  case SpeculationAlgorithm::DraftBased:
+    return "draft";
+  case SpeculationAlgorithm::Invalid:
+    return "none";
+  }
+  return "none";
+}
+
 enum VerificationKind {
   Correction,
   Bonus,
-  Invalid
+  Draft,
+  Autoregressive
 };
+
+static constexpr std::string_view verification_kind_name(VerificationKind kind) {
+  switch (kind) {
+  case VerificationKind::Bonus:
+    return "bonus";
+  case VerificationKind::Correction:
+    return "correction";
+  case VerificationKind::Draft:
+    return "draft";
+  case VerificationKind::Autoregressive:
+    return "ar";
+  }
+  return "ar";
+}
 
 struct VerificationResults {
   llama_token target_token;
   std::vector<llama_token> accepted_drafts;
-  VerificationKind kind = VerificationKind::Invalid;
+  VerificationKind kind = VerificationKind::Autoregressive;
   std::optional<std::size_t> rejected_proposal_index = std::nullopt;
 };
 
@@ -399,7 +666,11 @@ public:
                 std::optional<double> energy_j = std::nullopt,
                 std::optional<double> j_per_token = std::nullopt,
                 std::optional<double> average_wattage = std::nullopt,
-                std::string_view energy_source = "unavailable") {
+                std::string_view energy_source = "unavailable",
+                std::optional<double> cpu_energy_j = std::nullopt,
+                std::optional<double> gpu_energy_j = std::nullopt,
+                std::string_view gpu_name = "",
+                std::size_t gpu_sample_count = 0) {
     tokens.flush();
     tokens.close();
 
@@ -413,7 +684,11 @@ public:
                    energy_j,
                    j_per_token,
                    average_wattage,
-                   energy_source);
+                   energy_source,
+                   cpu_energy_j,
+                   gpu_energy_j,
+                   gpu_name,
+                   gpu_sample_count);
   }
 
   const std::filesystem::path &dir() const { return run_dir; }
@@ -444,7 +719,11 @@ private:
                       std::optional<double> energy_j = std::nullopt,
                       std::optional<double> j_per_token = std::nullopt,
                       std::optional<double> average_wattage = std::nullopt,
-                      std::string_view energy_source = "unavailable") {
+                      std::string_view energy_source = "unavailable",
+                      std::optional<double> cpu_energy_j = std::nullopt,
+                      std::optional<double> gpu_energy_j = std::nullopt,
+                      std::string_view gpu_name = "",
+                      std::size_t gpu_sample_count = 0) {
 
     const std::filesystem::path final_path = run_dir / "meta.json";
     const std::filesystem::path tmp_path = run_dir / "meta.json.tmp";
@@ -503,7 +782,27 @@ private:
     m << "    \"average_wattage\": ";
     write_json_optional_double(m, average_wattage);
     m << ",\n";
-    m << "    \"energy_source\": \"" << json_escape(energy_source) << "\"\n";
+    m << "    \"energy_source\": \"" << json_escape(energy_source) << "\",\n";
+    m << "    \"cpu_energy_j\": ";
+    write_json_optional_double(m, cpu_energy_j);
+    m << ",\n";
+    m << "    \"gpu_energy_j\": ";
+    write_json_optional_double(m, gpu_energy_j);
+    m << ",\n";
+    m << "    \"gpu_name\": ";
+    if (gpu_name.empty()) {
+      m << "null";
+    } else {
+      m << "\"" << json_escape(gpu_name) << "\"";
+    }
+    m << ",\n";
+    m << "    \"gpu_sample_count\": ";
+    if (gpu_sample_count > 0) {
+      m << gpu_sample_count;
+    } else {
+      m << "null";
+    }
+    m << "\n";
     m << "  },\n";
 
     m << "  \"rounds\": [";
@@ -613,7 +912,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("");
   print("Models:");
   print("  --target-model <file>    gguf target model file (required)");
-  print("  --draft-model <file>     gguf draft model file (enables speculative decoding)");
+  print("  --draft-model <file>     gguf draft model file (enables draft based speculative decoding)");
   print("");
   print("Runtime:");
   print("  --ctx-size <n>           context size in tokens (0 = from model) (default: {})", params.context_size);
@@ -638,6 +937,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --seed <n>               sampler seed (default: {})", params.seed);
   print("  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
   print("  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", params.results_dir);
+  print("  --verbose                per-round recap: drafter, accepted n/k, draft vs target, token ids (default: {})", params.verbose ? "true" : "false");
   print("");
   print("Misc:");
   print("  -h, --help               print this message and exit");
@@ -703,6 +1003,8 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
         }
       } else if (std::strcmp(argv[i], "--greedy") == 0) {
         params.greedy = true;
+      } else if (std::strcmp(argv[i], "--verbose") == 0) {
+        params.verbose = true;
       } else if (std::strcmp(argv[i], "--ngram") == 0) {
         params.ngram = true;
       } else if (std::strcmp(argv[i], "--n-gram-size") == 0) {
@@ -792,7 +1094,9 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
                                       ? "spec"
                                       : "ar";
 
-    params.run_id = std::format("{}_{}_seed{}", ts, mode, params.seed);
+    params.run_id = params.greedy
+                        ? std::format("{}_{}_greedy", ts, mode)
+                        : std::format("{}_{}_seed{}", ts, mode, params.seed);
   }
 
   return config;
@@ -843,6 +1147,8 @@ private:
   int tokens_generated_in_round = 0;
   int bonus_tokens_drafted_in_round = 0;
 
+  enum SpeculationAlgorithm algorithm = SpeculationAlgorithm::Invalid;
+
   const bool ds = params.draft_speculative_decoding_is_enabled(); // draft based speculative decoding
   const bool ns = params.ngram_speculative_decoding_is_enabled(); // ngram based speculative decoding
 
@@ -887,22 +1193,70 @@ private:
     }
   }
 
-  std::string token_to_string(const struct llama_vocab *vocab, llama_token token, bool special = true) {
+  std::string token_to_string(const struct llama_vocab *vocab, llama_token token, bool special = true,
+                              bool escape_newlines = true) {
     std::string piece;
     piece.resize(piece.capacity());
 
     const int count = llama_token_to_piece(vocab, token, &piece[0], static_cast<int>(piece.size()), 0, special);
     if (count < 0) {
       piece.resize(static_cast<std::size_t>(-count));
-      int check = llama_token_to_piece(vocab, token, &piece[0], static_cast<int>(piece.size()), 0, special);
-      assert(check == -count && "failed to convert token to piece");
+      const int check = llama_token_to_piece(vocab, token, &piece[0], static_cast<int>(piece.size()), 0, special);
+      if (check != -count) {
+        throw SpectreError("failed to convert token {} to piece", token);
+      }
     } else {
       piece.resize(static_cast<std::size_t>(count));
     }
 
-    escape_newlines_in_place(piece);
+    if (escape_newlines) {
+      escape_newlines_in_place(piece);
+    }
 
     return piece;
+  }
+
+  void emit_generated_token(llama_token id) {
+    const std::string piece = token_to_string(vocabulary_target, id, true, false);
+    std::cout.write(piece.data(), static_cast<std::streamsize>(piece.size()));
+    std::cout.flush();
+  }
+
+  void print_round_recap(int round,
+                         SpeculationAlgorithm algo,
+                         VerificationKind kind,
+                         const std::vector<llama_token> &proposed,
+                         const std::vector<llama_token> &accepted,
+                         llama_token kept,
+                         std::optional<std::size_t> rejected_index) {
+    using namespace Color;
+
+    const auto bar = [this](llama_token id) {
+      return std::format("|{}|", token_to_string(vocabulary_target, id));
+    };
+
+    if (params.verbose) {
+      std::cout << '\n';
+      print("round {}  drafter={}  accepted {}/{}",
+            round, speculation_algorithm_name(algo),
+            static_cast<int>(accepted.size()),
+            static_cast<int>(proposed.size()));
+
+      if (kind == VerificationKind::Correction && rejected_index &&
+          *rejected_index < proposed.size()) {
+        print("  draft   {}", Blue(bar(proposed[*rejected_index])));
+        print("  target  {}", Yellow(bar(kept)));
+      } else if (kind == VerificationKind::Bonus) {
+        print("  bonus   {}", bar(kept));
+      }
+
+      std::string rejected = "-";
+      if (rejected_index && *rejected_index < proposed.size()) {
+        rejected = std::to_string(static_cast<int>(proposed[*rejected_index]));
+      }
+      print("  kind={}  kept_id={}  rejected_id={}",
+            verification_kind_name(kind), kept, rejected);
+    }
   }
 
   std::tuple<double, double> softmax(const float *logits_row,
@@ -954,6 +1308,9 @@ private:
 
   void init_backend() {
     auto logger = [](ggml_log_level level, const char *text, void *) {
+      if (level == GGML_LOG_LEVEL_DEBUG) {
+        return;
+      }
       std::cout << log_level_to_string(level) << text << std::flush;
     };
 
@@ -1022,7 +1379,7 @@ private:
 
       if (add_mismatch || id_mismatch) {
         throw SpectreError("{}: draft model {} tokens must match target model to use speculation. "
-                           "add: {} - {}, id: {} - {}\n",
+                           "add: {} - {}, id: {} - {}",
                            __func__, token_type, add_target, add_draft, id_target, id_draft);
       }
     };
@@ -1046,7 +1403,7 @@ private:
     // check vocabulary size delta
     if (vocab_diff > delta) {
       throw SpectreError("{}: draft model vocab must closely match target model to use speculation but "
-                         "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}\n",
+                         "target vocab size {} does not match draft vocab size {} - difference {}, max allowed {}",
                          __func__, vocab_target_count, vocab_draft_count, vocab_diff, delta);
     }
 
@@ -1058,36 +1415,71 @@ private:
 
       if (token_target != token_draft) {
         throw SpectreError("{}: draft model vocab must match target model to"
-                           " use speculation but token {} content differs\n",
+                           " use speculation but token {} content differs",
                            __func__, i);
       }
     }
   }
 
   void prepare_prompt() {
-    vocabulary_target = llama_model_get_vocab(model_weights_target.get());
+    auto wt = model_weights_target.get();
+    auto wd = model_weights_draft.get();
 
-    if (params.draft_speculative_decoding_is_enabled()) {
-      vocabulary_draft = llama_model_get_vocab(model_weights_draft.get());
+    llama_chat_message msg{
+        .role = "user",                  /* role */
+        .content = params.prompt.c_str() /* content */
+    };
+
+    const char *tmpl = llama_model_chat_template(wt, nullptr);
+    if (tmpl == nullptr) {
+      throw SpectreError("llama_model_chat_template failed");
     }
 
-    const int32_t prompt_target_len = -llama_tokenize(vocabulary_target,                          /* vocab */
-                                                      params.prompt.c_str(),                      /* text */
-                                                      static_cast<int32_t>(params.prompt.size()), /* text_len */
-                                                      nullptr,                                    /* tokens */
-                                                      0,                                          /* n_tokens_max */
-                                                      true,                                       /* add_special */
-                                                      true                                        /* parse_special */
+    const int32_t need = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
+    if (need < 0) {
+      throw SpectreError("this custom template is not supported");
+    }
+
+    const std::size_t len = static_cast<std::size_t>(need);
+    std::string rendered(len, '\0');
+
+    const int32_t got = llama_chat_apply_template(tmpl,                                 /* tmpl */
+                                                  &msg,                                 /* chat */
+                                                  1,                                    /* n_msg */
+                                                  true,                                 /* add_ass */
+                                                  rendered.data(),                      /* buf */
+                                                  static_cast<int32_t>(rendered.size()) /* length */
     );
 
-    //
-    // place the user's prompt inside the target's kv cache
-    //
+    if (got != static_cast<int32_t>(rendered.size())) {
+      throw SpectreError("this custom template is not supported");
+    }
+
+    vocabulary_target = llama_model_get_vocab(wt);
+
+    if (params.draft_speculative_decoding_is_enabled()) {
+      vocabulary_draft = llama_model_get_vocab(wd);
+    }
+
+    // tokenize the rendered chat template
+    const int32_t prompt_target_len = -llama_tokenize(vocabulary_target,                     /* vocab */
+                                                      rendered.c_str(),                      /* text */
+                                                      static_cast<int32_t>(rendered.size()), /* text_len */
+                                                      nullptr,                               /* tokens */
+                                                      0,                                     /* n_tokens_max */
+                                                      true,                                  /* add_special */
+                                                      true                                   /* parse_special */
+    );
+
+    if (prompt_target_len <= 0) {
+      throw SpectreError("failed to tokenize rendered chat prompt (n = {})", prompt_target_len);
+    }
+
     tokens_already_in_target_kv.resize(static_cast<uint32_t>(prompt_target_len));
 
     int32_t n = llama_tokenize(vocabulary_target,                                        /* vocab */
-                               params.prompt.c_str(),                                    /* text */
-                               static_cast<int32_t>(params.prompt.size()),               /* text_len */
+                               rendered.c_str(),                                         /* text */
+                               static_cast<int32_t>(rendered.size()),                    /* text_len */
                                tokens_already_in_target_kv.data(),                       /* tokens */
                                static_cast<int32_t>(tokens_already_in_target_kv.size()), /* n_tokens_max */
                                true,                                                     /* add_special */
@@ -1095,10 +1487,12 @@ private:
     );
 
     if (n < 0) {
-      throw SpectreError("failed to tokenize prompt (n = {})", n);
+      throw SpectreError("failed to tokenize rendered chat prompt (n = {})", n);
     }
 
-    print("\"{}\" ({} tokens)", params.prompt.c_str(), prompt_target_len);
+    tokens_already_in_target_kv.resize(static_cast<uint32_t>(n));
+
+    print("\"{}\" ({} tokens)", rendered.c_str(), n);
 
     auto target_kv_size = static_cast<uint32_t>(tokens_already_in_target_kv.size());
 
@@ -1160,6 +1554,40 @@ private:
     }
   }
 
+  bool are_ngram_proposed_tokens_usable(const std::vector<llama_token> &proposals) {
+    auto n = static_cast<std::size_t>(params.n_gram_size);
+    if (proposals.empty() || n == 0) return false;
+
+    auto proposal_len = proposals.size();
+    auto kv_cache_len = tokens_already_in_target_kv.size();
+
+    if (proposal_len >= n && kv_cache_len >= n) {
+      bool echoes = true;
+
+      for (std::size_t k = 0; k < n; ++k) {
+        if (proposals[k] != tokens_already_in_target_kv[kv_cache_len - n + k]) {
+          echoes = false;
+          break;
+        }
+      }
+      if (echoes) return false;
+    }
+
+    // reject period-2 / period-3 loops: A A A... or A B A B...
+    auto periodic = [&](std::size_t p) {
+      if (p == 0 || proposals.size() < 2 * p) return false;
+
+      for (std::size_t i = p; i < proposals.size(); ++i) {
+        if (proposals[i] != proposals[i - p]) return false;
+      }
+      return true;
+    };
+
+    if (periodic(1) || periodic(2) || periodic(3)) return false;
+
+    return true;
+  }
+
   void prefill_target_prefix() {
     llama_synchronize(ctx_target.get());
     if (params.draft_speculative_decoding_is_enabled()) {
@@ -1170,7 +1598,11 @@ private:
     print("writing structured run output to: {}", recorder->dir().string());
 
     if (!telemetry.energy_available()) {
-      print(GGML_LOG_LEVEL_ERROR, "RAPL energy counter not found at /sys/class/powercap/intel-rapl:0/energy_uj");
+      print(GGML_LOG_LEVEL_ERROR,
+            "no energy meter: RAPL energy_uj unreadable and NVML libnvidia-ml.so unavailable ({})",
+            telemetry.energy_detail());
+    } else {
+      print("energy meter: {}", telemetry.energy_detail());
     }
 
     params.tokens_accepted_count = 0;
@@ -1225,11 +1657,11 @@ private:
     /* ====================== */
 
     if (ds && ns) {
-      print("speculative decoding using draft model and ngram cache is enabled\n");
+      print("speculative decoding using draft model and ngram cache is enabled");
     } else if (ds) {
-      print("speculative decoding using draft model is enabled\n");
+      print("speculative decoding using draft model is enabled");
     } else if (ns) {
-      print("speculative decoding using ngram cache is enabled\n");
+      print("speculative decoding using ngram cache is enabled");
     }
 
     int speculative_round = 0;
@@ -1276,15 +1708,23 @@ private:
         proposed_tokens = draft_using_ngram_simple();
       }
 
-      // fallback
-      if (proposed_tokens.empty() && ds) {
-        proposed_tokens = draft_using_draft_model();
+      // fallback (hybrid)
+      if (!are_ngram_proposed_tokens_usable(proposed_tokens)) {
+        proposed_tokens.clear();
+        algorithm = SpeculationAlgorithm::Invalid;
+        if (ds) {
+          proposed_tokens = draft_using_draft_model();
+        }
       }
 
-      if (proposed_tokens.size() > static_cast<std::size_t>(params.max_tokens_to_draft)) {
-        proposed_tokens.resize(static_cast<std::size_t>(params.max_tokens_to_draft));
-      } else if (proposed_tokens.size() < static_cast<std::size_t>(params.min_tokens_to_draft)) {
+      auto max = static_cast<std::size_t>(params.max_tokens_to_draft);
+      auto min = static_cast<std::size_t>(params.min_tokens_to_draft);
+
+      if (proposed_tokens.size() > max) {
+        proposed_tokens.resize(max);
+      } else if (proposed_tokens.size() < min) {
         proposed_tokens.clear();
+        algorithm = SpeculationAlgorithm::Invalid;
       }
 
       // reset target batch so we can reuse it on later iterations
@@ -1319,23 +1759,22 @@ private:
       auto verifications = verify_draft_proposals(proposed_tokens);
 
       auto &kind = verifications.kind;
-      auto &target = verifications.target_token;
-      auto &accepted = verifications.accepted_drafts;
+      auto &target_token = verifications.target_token;
+      auto &accepted_drafts = verifications.accepted_drafts;
       auto &rejected_proposal_index = verifications.rejected_proposal_index;
 
-      params.tokens_accepted_count += static_cast<int64_t>(accepted.size());
+      params.tokens_accepted_count += static_cast<int64_t>(accepted_drafts.size());
       params.tokens_drafted_count += static_cast<int64_t>(proposed_tokens.size());
 
-      next_target_token_position += static_cast<llama_pos>(accepted.size());
+      next_target_token_position += static_cast<llama_pos>(accepted_drafts.size());
 
       if (kind == VerificationKind::Bonus) {
         bonus_tokens_drafted_in_round += 1;
       }
 
-      for (std::size_t i = 0; i < accepted.size(); ++i) /* iterate over the accepted tokens and print them */
-      {
+      for (std::size_t i = 0; i < accepted_drafts.size(); ++i) {
 
-        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)i), accepted[i]);
+        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)i), accepted_drafts[i]);
         const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
 
         std::optional<std::size_t> position_in_draft = std::optional<std::size_t>{i};
@@ -1346,15 +1785,15 @@ private:
           draft_probability = last_draft_probabilities[*position_in_draft];
         }
 
-        recorder->record_token(speculative_round,             /* call */
-                               "draft",                       /* source */
-                               position_in_draft,             /* pos_in_draft */
-                               static_cast<int>(accepted[i]), /* token_id */
-                               prob,                          /* p_target */
-                               std::nullopt,                  /* rejected_token_id */
-                               draft_probability,             /* p_draft */
-                               logit,                         /* logit */
-                               logprob                        /* logprob */
+        recorder->record_token(speculative_round,                    /* call */
+                               "draft",                              /* source */
+                               position_in_draft,                    /* pos_in_draft */
+                               static_cast<int>(accepted_drafts[i]), /* token_id */
+                               prob,                                 /* p_target */
+                               std::nullopt,                         /* rejected_token_id */
+                               draft_probability,                    /* p_draft */
+                               logit,                                /* logit */
+                               logprob                               /* logprob */
         );
 
         //
@@ -1365,7 +1804,7 @@ private:
         //
         // for now temporary, pending_token is the accepted token we are currently on
         //
-        pending_token = accepted[i];
+        pending_token = accepted_drafts[i];
 
         // first increment overall generated tokens then check
         tokens_generated_in_round += 1;
@@ -1383,22 +1822,7 @@ private:
           break;
         }
 
-        std::string token = token_to_string(vocabulary_target, pending_token);
-
-        // rotating ANSI color for the token:
-        // cyan -> magenta -> blue -> yellow -> green -> red
-        static constexpr int colors[] = {36, 35, 34, 33, 32, 31};
-        static constexpr std::size_t col = 24; // pad token+brackets to this column
-
-        const int color = colors[i % std::size(colors)];
-        const std::size_t visible = token.size() + 2; // 2 chars for the surrounding '|'
-        const std::string pad(visible < col ? col - visible : 1, ' ');
-
-        print("\x1b[{}m|{}|\x1b[0m{}(accepted {} out of {} draft tokens, pending_token = {})",
-              color, token, pad,
-              static_cast<int>(accepted.size()),
-              static_cast<int>(proposed_tokens.size()),
-              pending_token);
+        emit_generated_token(pending_token);
       }
 
       //
@@ -1409,7 +1833,7 @@ private:
 
       // drafts already hit EOS / n_predict: do not emit the correction/bonus
       if (!params.has_encountered_eos) {
-        pending_token = target;
+        pending_token = target_token;
         tokens_generated_in_round += 1;
 
         const std::string_view source = [](VerificationKind k) {
@@ -1418,13 +1842,15 @@ private:
             return "bonus";
           case Correction:
             return "correction";
-          case Invalid:
+          case Autoregressive:
+            return "ar";
+          case Draft:
           default:
             return "draft";
           }
         }(kind);
 
-        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)accepted.size()), target);
+        auto [logit, prob] = softmax(llama_get_logits_ith(ctx_target.get(), (int32_t)accepted_drafts.size()), target_token);
         const double logprob = prob > 0.0 ? std::log(prob) : -std::numeric_limits<double>::infinity();
 
         std::optional<std::size_t> position_in_draft;
@@ -1441,15 +1867,15 @@ private:
           }
         }
 
-        recorder->record_token(speculative_round,        /* call */
-                               source,                   /* source */
-                               position_in_draft,        /* pos_in_draft */
-                               static_cast<int>(target), /* token_id */
-                               prob,                     /* p_target */
-                               rejected_token_id,        /* rejected_token_id */
-                               draft_probability,        /* p_draft */
-                               logit,                    /* logit */
-                               logprob                   /* logprob */
+        recorder->record_token(speculative_round,              /* call */
+                               source,                         /* source */
+                               position_in_draft,              /* pos_in_draft */
+                               static_cast<int>(target_token), /* token_id */
+                               prob,                           /* p_target */
+                               rejected_token_id,              /* rejected_token_id */
+                               draft_probability,              /* p_draft */
+                               logit,                          /* logit */
+                               logprob                         /* logprob */
         );
 
         if (llama_vocab_is_eog(vocabulary_target, pending_token)) {
@@ -1457,14 +1883,26 @@ private:
         } else if (params.max_generated_tokens > 0 &&
                    static_cast<int64_t>(tokens_generated_in_round) >= params.max_generated_tokens) {
           params.has_encountered_eos = true;
+        } else {
+          emit_generated_token(pending_token);
         }
       }
 
       llama_memory_seq_rm(mem_target, 0, next_target_token_position, -1);
 
       recorder->record_round(static_cast<int>(proposed_tokens.size()),
-                             static_cast<int>(accepted.size()),
+                             static_cast<int>(accepted_drafts.size()),
                              rejected_proposal_index);
+
+      if (!proposed_tokens.empty()) {
+        print_round_recap(speculative_round,
+                          algorithm,
+                          kind,
+                          proposed_tokens,
+                          accepted_drafts,
+                          target_token,
+                          rejected_proposal_index);
+      }
 
       speculative_round += 1;
     }
@@ -1514,9 +1952,7 @@ private:
         break;
       }
 
-      auto token = token_to_string(vocabulary_target, pending_token);
-      std::cout.write(token.data(), static_cast<long>(token.size()));
-      std::cout.flush();
+      emit_generated_token(pending_token);
 
       // prepare the next batch with the sampled token
       batch = llama_batch_get_one(&pending_token, 1);
@@ -1550,18 +1986,37 @@ private:
             params.tokens_drafted_count, params.tokens_accepted_count,
             100.0 * static_cast<double>(params.tokens_accepted_count) /
                 static_cast<double>(params.tokens_drafted_count));
+    } else if (ns) {
+      print(GGML_LOG_LEVEL_WARN,
+            "ngram produced no drafts (n-gram-size={}); decoded target-only. "
+            "repeated n-grams are uncommon until the model starts copying the prompt or its own output",
+            params.n_gram_size);
     }
 
     const auto energy_j = telemetry.decode.total_joules;
     const auto j_per_token = telemetry.decode_joules_per_token(tokens_generated_in_round);
     const auto average_wattage = telemetry.decode.average_wattage;
+    const auto cpu_energy_j = telemetry.decode.cpu_joules;
+    const auto gpu_energy_j = telemetry.decode.gpu_joules;
 
     if (energy_j) {
-      print("energy (decode window, {}): {:.3f} J, {:.4f} J/token, {:.2f} W avg",
-            telemetry.energy_source(),
-            *energy_j,
-            j_per_token.value_or(0.0),
-            average_wattage.value_or(0.0));
+      if (telemetry.decode.gpu_samples > 0) {
+        print("energy (decode window, {}, {} samples): {:.3f} J, {:.4f} J/token, {:.2f} W avg",
+              telemetry.energy_source(),
+              telemetry.decode.gpu_samples,
+              *energy_j,
+              j_per_token.value_or(0.0),
+              average_wattage.value_or(0.0));
+      } else {
+        print("energy (decode window, {}): {:.3f} J, {:.4f} J/token, {:.2f} W avg",
+              telemetry.energy_source(),
+              *energy_j,
+              j_per_token.value_or(0.0),
+              average_wattage.value_or(0.0));
+      }
+    }
+    if (cpu_energy_j && gpu_energy_j) {
+      print("  cpu intel-rapl:0: {:.3f} J    gpu nvml:0: {:.3f} J", *cpu_energy_j, *gpu_energy_j);
     }
 
     recorder->finalize(static_cast<int64_t>(tokens_generated_in_round),
@@ -1573,7 +2028,11 @@ private:
                        energy_j,
                        j_per_token,
                        average_wattage,
-                       telemetry.energy_source());
+                       telemetry.energy_source(),
+                       cpu_energy_j,
+                       gpu_energy_j,
+                       telemetry.gpu_name(),
+                       telemetry.decode.gpu_samples);
 
     print("wrote {} and {}",
           (recorder->dir() / "meta.json").string(),
@@ -1596,8 +2055,12 @@ private:
     // each describing one token we want to process in this forward pass
     // create_new_batch basically is fill the next slot with (token, pos, logits, seq) then n_tokens++
     //
-    assert(batch.n_tokens < max_tokens && "llama_batch capacity exceeded");
-    assert(batch.seq_id[batch.n_tokens] && "llama_batch seq_id slot missing");
+    if (batch.n_tokens >= max_tokens) {
+      throw SpectreError("llama_batch capacity exceeded ({}/{})", batch.n_tokens, max_tokens);
+    }
+    if (batch.seq_id[batch.n_tokens] == nullptr) {
+      throw SpectreError("llama_batch seq_id slot missing");
+    }
     batch.token[batch.n_tokens] = id;
     batch.pos[batch.n_tokens] = pos;
     batch.n_seq_id[batch.n_tokens] = 1;
@@ -1641,12 +2104,12 @@ private:
     // * after all N proposals match, logits at index N predict the token after the final proposal
     //
     // * sampling it gives the free (no additional target-model forward pass) bonus token from the
-    //   same target-model decode.
+    //   same target-model decode
     //
     const llama_token bonus = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(proposes.size()));
 
-    if (proposes.size() == 0) {
-      kind = VerificationKind::Correction;
+    if (proposes.empty()) {
+      kind = VerificationKind::Autoregressive;
     } else {
       kind = VerificationKind::Bonus;
     }
@@ -1685,6 +2148,8 @@ private:
   }
 
   std::vector<llama_token> draft_using_ngram_simple() {
+    algorithm = SpeculationAlgorithm::NgramSimple;
+
     const auto &tokens = tokens_already_in_target_kv;
     const llama_token sampled = pending_token; // sampled but not decoded
 
@@ -1694,7 +2159,9 @@ private:
     const std::size_t M = static_cast<std::size_t>(params.m_gram_size); // max how many tokens we copy after a hit
 
     std::vector<llama_token> result;
-    if (length <= N + M + 1) {
+
+    // need the current n-gram plus at least one earlier position to search
+    if (N == 0 || length <= N + 1) {
       return result;
     }
 
@@ -1728,8 +2195,12 @@ private:
       return result;
     }
 
+    if (match_pos + N >= length) {
+      return result;
+    }
+
     const std::size_t copy_max = std::min(M, length - (match_pos + N));
-    if (copy_max < N) {
+    if (copy_max == 0) {
       return result;
     }
 
@@ -1744,29 +2215,77 @@ private:
     return result;
   }
 
+  llama_memory_t draft_memory() {
+    return llama_get_memory(ctx_draft.get());
+  }
+
+  std::size_t draft_kv_len() {
+    const llama_pos max_cached_pos = llama_memory_seq_pos_max(draft_memory(), 0);
+    return max_cached_pos < 0 ? 0 : static_cast<std::size_t>(max_cached_pos + 1);
+  }
+
+  void draft_kv_reset() {
+    llama_memory_clear(draft_memory(), false);
+    tokens_in_draft_kv.clear();
+  }
+
+  //
+  // llama KV is the source of truth
+  //
+  bool draft_kv_keep_first(std::size_t n) {
+    if (n >= tokens_in_draft_kv.size()) {
+      return true;
+    }
+
+    if (!llama_memory_seq_rm(draft_memory(), 0, static_cast<llama_pos>(n), -1)) {
+      draft_kv_reset();
+      return false;
+    }
+
+    tokens_in_draft_kv.resize(n);
+
+    return true;
+  }
+
+  bool draft_kv_drop_first(std::size_t n) {
+    if (n == 0) {
+      return true;
+    }
+
+    llama_memory_t mem = draft_memory();
+
+    if (n >= tokens_in_draft_kv.size() ||
+        !llama_memory_can_shift(mem) ||
+        !llama_memory_seq_rm(mem, 0, 0, static_cast<llama_pos>(n))) {
+
+      draft_kv_reset();
+      return false;
+    }
+
+    llama_memory_seq_add(mem, 0, static_cast<llama_pos>(n), -1, -static_cast<llama_pos>(n));
+
+    tokens_in_draft_kv.erase(tokens_in_draft_kv.begin(),
+                             tokens_in_draft_kv.begin() + static_cast<std::ptrdiff_t>(n));
+
+    return true;
+  }
+
   //
   // propose new tokens using a secondary smaller model
   //
   std::vector<llama_token> draft_using_draft_model() {
-    llama_memory_t mem_draft = llama_get_memory(ctx_draft.get());
-
-    const auto draft_kv_cache_len = [&]() -> std::size_t {
-      const llama_pos max_cached_pos = llama_memory_seq_pos_max(mem_draft, 0);
-      return max_cached_pos < 0 ? 0 : static_cast<std::size_t>(max_cached_pos + 1);
-    };
+    algorithm = SpeculationAlgorithm::DraftBased;
 
     // the draft-side token mirror must track KV exactly
-    if (draft_kv_cache_len() != tokens_in_draft_kv.size()) {
+    if (draft_kv_len() != tokens_in_draft_kv.size()) {
       print(GGML_LOG_LEVEL_WARN,
             "draft(): KV/token mirror drift detected"
             "(kv_len={}, prompt_draft={})",
-            draft_kv_cache_len(),
+            draft_kv_len(),
             tokens_in_draft_kv.size());
 
       print(GGML_LOG_LEVEL_WARN, "resyncing draft state");
-
-      llama_memory_clear(mem_draft, false);
-      tokens_in_draft_kv.clear();
+      draft_kv_reset();
     }
 
     int reuse_starting_from = 0; // the index of the first token to be reused
@@ -1823,9 +2342,7 @@ private:
     result.reserve(static_cast<std::size_t>(params.max_tokens_to_draft)); // n_max tokens to be drafted at a time
 
     if (reuse_count == 0) {
-      // nothing to be reused
-      llama_memory_clear(mem_draft, false);
-      tokens_in_draft_kv.clear();
+      draft_kv_reset();
     } else {
       // this happens when a previous draft has been discarded (for example, due to being too small),
       // but the target model agreed with it. in this case, we simply pass back the previous results
@@ -1845,20 +2362,22 @@ private:
       }
 
       // skip re-evaluating a prefix the draft already computed
-
-      if (reuse_starting_from > 0) {
-        // drop the unused prefix by deleting [0, reuse_starting_from)
-        llama_memory_seq_rm(mem_draft, 0, 0, reuse_starting_from);
-
-        // then slide the rest to position 0
-        llama_memory_seq_add(mem_draft, 0, reuse_starting_from, -1, -reuse_starting_from);
-
-        tokens_in_draft_kv.erase(tokens_in_draft_kv.begin(), tokens_in_draft_kv.begin() + reuse_starting_from);
+      // seq_rm is allowed to fail so on failure both mirrors are wiped and this
+      // round prefills from first_token (reuse_count = 0)
+      if (reuse_starting_from > 0 &&
+          !draft_kv_drop_first(static_cast<std::size_t>(reuse_starting_from))) {
+        reuse_count = 0;
       }
 
-      if (reuse_count < prompt_draft_len) {
-        llama_memory_seq_rm(mem_draft, 0, reuse_count, -1);
-        tokens_in_draft_kv.erase(tokens_in_draft_kv.begin() + reuse_count, tokens_in_draft_kv.end());
+      if (reuse_count > 0 &&
+          static_cast<std::size_t>(reuse_count) < tokens_in_draft_kv.size() &&
+          !draft_kv_keep_first(static_cast<std::size_t>(reuse_count))) {
+        reuse_count = 0;
+      }
+
+      if (draft_kv_len() != tokens_in_draft_kv.size()) {
+        draft_kv_reset();
+        reuse_count = 0;
       }
     }
 
@@ -1866,7 +2385,7 @@ private:
     reset_batch(speculative_batch_draft);
 
     const int32_t draft_batch_capacity = static_cast<int32_t>(llama_n_batch(ctx_draft.get()));
-    llama_pos next_position = static_cast<llama_pos>(draft_kv_cache_len());
+    llama_pos next_position = static_cast<llama_pos>(draft_kv_len());
 
     for (std::size_t i = static_cast<std::size_t>(first_token + reuse_count); i < current_prompt.size(); ++i) {
       create_new_batch(speculative_batch_draft, draft_batch_capacity, current_prompt[i], next_position, false);
@@ -1896,7 +2415,7 @@ private:
     }
 
     // position must come from KV
-    const llama_pos last_token_pos = static_cast<llama_pos>(draft_kv_cache_len());
+    const llama_pos last_token_pos = static_cast<llama_pos>(draft_kv_len());
 
     create_new_batch(speculative_batch_draft, /* batch */
                      draft_batch_capacity,    /* max_tokens */
@@ -1950,7 +2469,7 @@ private:
         break;
       }
 
-      const llama_pos draft_next_pos = static_cast<llama_pos>(draft_kv_cache_len());
+      const llama_pos draft_next_pos = static_cast<llama_pos>(draft_kv_len());
 
       create_new_batch(speculative_batch_draft, /* batch */
                        draft_batch_capacity,    /* max_tokens */

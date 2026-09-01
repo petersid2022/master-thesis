@@ -8,8 +8,29 @@ set(LLAMA_DIR
     CACHE PATH "Path to llama.cpp source tree")
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 set(ENV{PKG_CONFIG_PATH} "${LLAMA_DIR}/build:$ENV{PKG_CONFIG_PATH}")
 pkg_check_modules(LLAMA REQUIRED IMPORTED_TARGET llama)
+
+find_path(
+  NVML_INCLUDE_DIR nvml.h
+  HINTS /usr/local/cuda/include /usr/local/cuda-12.0/include
+        "$ENV{CUDA_PATH}/include" "$ENV{CUDA_HOME}/include"
+  PATHS /usr/include)
+
+find_library(
+  NVML_LIBRARY nvidia-ml HINTS /usr/lib/x86_64-linux-gnu /usr/lib64
+                               /usr/local/cuda/lib64 /usr/local/cuda-12.0/lib64)
+
+if(NOT NVML_INCLUDE_DIR OR NOT NVML_LIBRARY)
+  message(
+    FATAL_ERROR
+      "NVML not found (nvml.h + libnvidia-ml). On Ubuntu: sudo apt install libnvidia-ml-dev"
+  )
+endif()
+
+message(STATUS "spectre: NVML include ${NVML_INCLUDE_DIR}")
+message(STATUS "spectre: NVML library ${NVML_LIBRARY}")
 
 add_executable(spectre src/main.cpp)
 
@@ -26,9 +47,11 @@ target_compile_options(spectre PRIVATE -Wall -Wextra -Werror -Wpedantic
 
 target_include_directories(spectre PRIVATE ${LLAMA_DIR}/include
                                            ${LLAMA_DIR}/ggml/include)
+target_include_directories(spectre SYSTEM PRIVATE ${NVML_INCLUDE_DIR})
 
 target_link_directories(spectre PRIVATE "${LLAMA_DIR}/build/bin")
-target_link_libraries(spectre PRIVATE PkgConfig::LLAMA)
+target_link_libraries(spectre PRIVATE PkgConfig::LLAMA ${NVML_LIBRARY}
+                                      Threads::Threads)
 
 target_link_options(spectre PRIVATE "-Wl,-rpath-link,${LLAMA_DIR}/build/bin")
 
