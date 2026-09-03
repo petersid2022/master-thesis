@@ -640,7 +640,8 @@ public:
                     double logprob) {
 
     tokens << step << ',' << call << ',' << source << ','
-           << position_in_draft.value_or(-1) << ',' << token_id << ','
+           << (position_in_draft.has_value() ? std::to_string(*position_in_draft) : std::string{}) << ','
+           << token_id << ','
            << fmt_double(p_target) << ','
            << (rejected_token_id.has_value() ? std::to_string(*rejected_token_id) : std::string{}) << ','
            << fmt_double(p_draft) << ','
@@ -749,8 +750,8 @@ private:
     m << "    \"speculative\": " << ((!p.draft_model_path.empty() || p.ngram) ? "true" : "false") << ",\n";
     m << "    \"ctx\": " << p.context_size << ",\n";
     m << "    \"ngl\": " << p.gpu_layers << ",\n";
-    m << "    \"n_min\": " << p.min_tokens_to_draft << ",\n";
-    m << "    \"n_max\": " << p.max_tokens_to_draft << ",\n";
+    m << "    \"min_tokens_to_draft\": " << p.min_tokens_to_draft << ",\n";
+    m << "    \"max_tokens_to_draft\": " << p.max_tokens_to_draft << ",\n";
     m << "    \"ngram\": " << (p.ngram ? "true" : "false") << ",\n";
     m << "    \"n_gram_size\": " << p.n_gram_size << ",\n";
     m << "    \"m_gram_size\": " << p.m_gram_size << ",\n";
@@ -1108,17 +1109,16 @@ private:
   InferenceTelemetry telemetry;
 
   /// ======================================================================
-  ///  decode token -> token enters KV cache and produces next-token logits
   ///  sample token -> selects from logits but does not enter KV cache
+  ///  decode token -> token enters KV cache and produces next-token logits
   /// ======================================================================
 
-  // token that's accepted but not yet in the target kv cache
-  llama_token pending_token = 0;
+  std::vector<std::optional<llama_token>> pool; // last-seen successor table for ngram-mod
 
-  std::vector<llama_token> tokens_already_in_target_kv;
+  llama_token pending_token = 0; // token that's accepted but not yet in the target kv cache
 
-  // what tokens currently sit in the draft KV cache
-  std::vector<llama_token> tokens_in_draft_kv;
+  std::vector<llama_token> tokens_in_target_kv; // what tokens currently sit in the target KV cache
+  std::vector<llama_token> tokens_in_draft_kv;  // what tokens currently sit in the draft KV cache
 
   std::unique_ptr<llama_model, LlamaModelDeleter> model_weights_target;
   std::unique_ptr<llama_model, LlamaModelDeleter> model_weights_draft;
@@ -1475,26 +1475,26 @@ private:
       throw SpectreError("failed to tokenize rendered chat prompt (n = {})", prompt_target_len);
     }
 
-    tokens_already_in_target_kv.resize(static_cast<uint32_t>(prompt_target_len));
+    tokens_in_target_kv.resize(static_cast<uint32_t>(prompt_target_len));
 
-    int32_t n = llama_tokenize(vocabulary_target,                                        /* vocab */
-                               rendered.c_str(),                                         /* text */
-                               static_cast<int32_t>(rendered.size()),                    /* text_len */
-                               tokens_already_in_target_kv.data(),                       /* tokens */
-                               static_cast<int32_t>(tokens_already_in_target_kv.size()), /* n_tokens_max */
-                               true,                                                     /* add_special */
-                               true                                                      /* parse_special */
+    int32_t n = llama_tokenize(vocabulary_target,                                /* vocab */
+                               rendered.c_str(),                                 /* text */
+                               static_cast<int32_t>(rendered.size()),            /* text_len */
+                               tokens_in_target_kv.data(),                       /* tokens */
+                               static_cast<int32_t>(tokens_in_target_kv.size()), /* n_tokens_max */
+                               true,                                             /* add_special */
+                               true                                              /* parse_special */
     );
 
     if (n < 0) {
       throw SpectreError("failed to tokenize rendered chat prompt (n = {})", n);
     }
 
-    tokens_already_in_target_kv.resize(static_cast<uint32_t>(n));
+    tokens_in_target_kv.resize(static_cast<uint32_t>(n));
 
     print("\"{}\" ({} tokens)", rendered.c_str(), n);
 
-    auto target_kv_size = static_cast<uint32_t>(tokens_already_in_target_kv.size());
+    auto target_kv_size = static_cast<uint32_t>(tokens_in_target_kv.size());
 
     // if context size < kv cache size then we've got a problem
     if (llama_n_ctx(ctx_target.get()) < target_kv_size) {
@@ -1506,7 +1506,7 @@ private:
       throw SpectreError("the prompt exceeds the batch size ({} tokens, batch {})", target_kv_size, llama_n_batch(ctx_target.get()));
     }
 
-    for (auto id : tokens_already_in_target_kv) {
+    for (auto id : tokens_in_target_kv) {
       print("|{}|", token_to_string(vocabulary_target, id).c_str());
     }
 
@@ -1559,13 +1559,13 @@ private:
     if (proposals.empty() || n == 0) return false;
 
     auto proposal_len = proposals.size();
-    auto kv_cache_len = tokens_already_in_target_kv.size();
+    auto kv_cache_len = tokens_in_target_kv.size();
 
     if (proposal_len >= n && kv_cache_len >= n) {
       bool echoes = true;
 
       for (std::size_t k = 0; k < n; ++k) {
-        if (proposals[k] != tokens_already_in_target_kv[kv_cache_len - n + k]) {
+        if (proposals[k] != tokens_in_target_kv[kv_cache_len - n + k]) {
           echoes = false;
           break;
         }
@@ -1613,7 +1613,7 @@ private:
     bonus_tokens_drafted_in_round = 0;
 
     // we've already filled target's kv cache vector with the prompt
-    if (tokens_already_in_target_kv.empty()) {
+    if (tokens_in_target_kv.empty()) {
       throw SpectreError("tokens_already_in_target_kv is empty");
     }
 
@@ -1622,8 +1622,8 @@ private:
     //
     // TODO: redundant for autoregressive runs but simplifies speculative verification
     //
-    auto t = tokens_already_in_target_kv.data();
-    auto n = static_cast<int32_t>(tokens_already_in_target_kv.size()) - 1;
+    auto t = tokens_in_target_kv.data();
+    auto n = static_cast<int32_t>(tokens_in_target_kv.size()) - 1;
 
     batch = llama_batch_get_one(t, n);
 
@@ -1642,10 +1642,10 @@ private:
     telemetry.begin_measuring(telemetry.decode);
 
     // sample starting from the last token of the prompt
-    pending_token = tokens_already_in_target_kv.back();
+    pending_token = tokens_in_target_kv.back();
 
     // don't forget to remove the token from the target kv cache
-    tokens_already_in_target_kv.pop_back();
+    tokens_in_target_kv.pop_back();
 
     // place the very last token to a new batch
     batch = llama_batch_get_one(&pending_token, 1);
@@ -1799,7 +1799,7 @@ private:
         //
         // we decoded the pending_token so now we add it to the target's KV cache
         //
-        tokens_already_in_target_kv.push_back(pending_token);
+        tokens_in_target_kv.push_back(pending_token);
 
         //
         // for now temporary, pending_token is the accepted token we are currently on
@@ -1829,7 +1829,7 @@ private:
       // commit the last pending token into the KV mirror (the last accepted draft, or
       // the round's original pending if no draft was kept)
       //
-      tokens_already_in_target_kv.push_back(pending_token);
+      tokens_in_target_kv.push_back(pending_token);
 
       // drafts already hit EOS / n_predict: do not emit the correction/bonus
       if (!params.has_encountered_eos) {
@@ -1995,7 +1995,7 @@ private:
 
     const auto energy_j = telemetry.decode.total_joules;
     const auto j_per_token = telemetry.decode_joules_per_token(tokens_generated_in_round);
-    const auto average_wattage = telemetry.decode.average_wattage;
+    const auto average_watt = telemetry.decode.average_wattage;
     const auto cpu_energy_j = telemetry.decode.cpu_joules;
     const auto gpu_energy_j = telemetry.decode.gpu_joules;
 
@@ -2006,13 +2006,13 @@ private:
               telemetry.decode.gpu_samples,
               *energy_j,
               j_per_token.value_or(0.0),
-              average_wattage.value_or(0.0));
+              average_watt.value_or(0.0));
       } else {
         print("energy (decode window, {}): {:.3f} J, {:.4f} J/token, {:.2f} W avg",
               telemetry.energy_source(),
               *energy_j,
               j_per_token.value_or(0.0),
-              average_wattage.value_or(0.0));
+              average_watt.value_or(0.0));
       }
     }
     if (cpu_energy_j && gpu_energy_j) {
@@ -2027,7 +2027,7 @@ private:
                        decode_ms,
                        energy_j,
                        j_per_token,
-                       average_wattage,
+                       average_watt,
                        telemetry.energy_source(),
                        cpu_energy_j,
                        gpu_energy_j,
@@ -2137,20 +2137,75 @@ private:
   //                          match_pos  n-gram
   //
 
-  // TODO
-  std::vector<llama_token> draft_using_ngram_cache() {
-    return {};
+  // https://en.wikipedia.org/wiki/Linear_congruential_generator
+  std::size_t lcg(const llama_token *token) {
+    std::size_t res = 0;
+
+    for (int i = 0; i < params.n_gram_size; ++i) {
+      res = res * 6364136223846793005ULL + static_cast<std::size_t>(token[i]);
+    }
+
+    return res % pool.size();
   }
 
-  // TODO
+  void insert_token_to_ngram_mod_pool(const llama_token *tokens) {
+    const std::size_t i = lcg(tokens);
+
+    if (!pool[i].has_value()) {
+      pool.resize(pool.size() + 1);
+    }
+
+    pool[i] = tokens[params.n_gram_size];
+  }
+
+  // last-seen successor table, indexed by a hash of the last n tokens
+  // basically last time I saw this, the next token was X
   std::vector<llama_token> draft_using_ngram_mod() {
-    return {};
+    algorithm = SpeculationAlgorithm::NgramMod;
+
+    const auto &tokens = tokens_in_target_kv;
+    const llama_token sampled = pending_token; // sampled but not decoded
+    const std::size_t length = tokens.size();  // target kv cache length
+
+    // how many tokens each ngram consists of
+    const std::size_t N = static_cast<std::size_t>(params.n_gram_size);
+
+    // need the current n-gram plus at least one earlier position to search
+    if (N == 0 || length <= N + 1) {
+      return {};
+    }
+
+    std::vector<llama_token> result;
+    result.reserve(static_cast<std::size_t>(params.n_gram_size));
+
+    std::vector<llama_token> ngram;
+    ngram.reserve(N);
+
+    // get the first ngram (starting from the end)
+    for (std::size_t j = length - N + 1; j < length; ++j) {
+      ngram.push_back(tokens[j]);
+    }
+
+    // add to that our pending token
+    ngram.push_back(sampled);
+
+    auto l = lcg(ngram.data());
+    auto a = std::next(pool.begin(), static_cast<std::ptrdiff_t>(l));
+
+    if (*a) {
+      auto value = (*a).value();
+      result.push_back(value);
+    }
+
+    last_draft_probabilities.assign(result.size(), std::numeric_limits<double>::quiet_NaN());
+
+    return result;
   }
 
   std::vector<llama_token> draft_using_ngram_simple() {
     algorithm = SpeculationAlgorithm::NgramSimple;
 
-    const auto &tokens = tokens_already_in_target_kv;
+    const auto &tokens = tokens_in_target_kv;
     const llama_token sampled = pending_token; // sampled but not decoded
 
     const std::size_t length = tokens.size(); // target kv cache length
@@ -2165,22 +2220,22 @@ private:
       return result;
     }
 
-    std::vector<llama_token> pattern;
-    pattern.reserve(N);
+    std::vector<llama_token> ngram;
+    ngram.reserve(N);
 
-    // get the first pattern occurence (starting from the end)
+    // get the first ngram (starting from the end)
     for (std::size_t j = length - N + 1; j < length; ++j) {
-      pattern.push_back(tokens[j]);
+      ngram.push_back(tokens[j]);
     }
 
     // add to that our pending token
-    pattern.push_back(sampled);
+    ngram.push_back(sampled);
 
     std::size_t match_pos = 0;
     for (std::size_t j = length - N - 1; j > 0; --j) {
       bool match = true;
-      for (std::size_t k = 0; k < pattern.size(); ++k) {
-        if (tokens[j + k] != pattern[k]) {
+      for (std::size_t k = 0; k < ngram.size(); ++k) {
+        if (tokens[j + k] != ngram[k]) {
           match = false;
           break;
         }
@@ -2291,7 +2346,7 @@ private:
     int reuse_starting_from = 0; // the index of the first token to be reused
     int reuse_count = 0;         // how much tokens can we reuse
 
-    const std::vector<llama_token> &current_prompt = tokens_already_in_target_kv;
+    const std::vector<llama_token> &current_prompt = tokens_in_target_kv;
 
     //
     //   context size of draft model   [48]
@@ -2303,7 +2358,7 @@ private:
     const uint32_t draft_context_size_capacity = llama_n_ctx(ctx_draft.get());
 
     if (params.max_tokens_to_draft >= static_cast<int64_t>(draft_context_size_capacity)) {
-      throw SpectreError("draft n_max ({}) must be less "
+      throw SpectreError("draft max_tokens_to_draft ({}) must be less "
                          "than draft model context size ({})",
                          params.max_tokens_to_draft,
                          draft_context_size_capacity);
@@ -2339,7 +2394,7 @@ private:
     }
 
     std::vector<llama_token> result;
-    result.reserve(static_cast<std::size_t>(params.max_tokens_to_draft)); // n_max tokens to be drafted at a time
+    result.reserve(static_cast<std::size_t>(params.max_tokens_to_draft)); // max_tokens_to_draft tokens to be drafted at a time
 
     if (reuse_count == 0) {
       draft_kv_reset();
@@ -2446,7 +2501,7 @@ private:
 
     for (int i = 0; i < params.max_tokens_to_draft; ++i) {
       // just like the sample_and_accept method
-      // only this time we need to be careful to not surpass n_max
+      // only this time we need to be careful to not surpass max_tokens_to_draft
 
       reset_batch(speculative_batch_draft);
 
