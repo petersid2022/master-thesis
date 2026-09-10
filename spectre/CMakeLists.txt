@@ -50,8 +50,8 @@ target_include_directories(spectre PRIVATE ${LLAMA_DIR}/include
 target_include_directories(spectre SYSTEM PRIVATE ${NVML_INCLUDE_DIR})
 
 target_link_directories(spectre PRIVATE "${LLAMA_DIR}/build/bin")
-target_link_libraries(spectre PRIVATE PkgConfig::LLAMA ${NVML_LIBRARY}
-                                      Threads::Threads)
+target_link_libraries(spectre PRIVATE llama-common PkgConfig::LLAMA
+                                      ${NVML_LIBRARY} Threads::Threads)
 
 target_link_options(spectre PRIVATE "-Wl,-rpath-link,${LLAMA_DIR}/build/bin")
 

@@ -24,6 +24,12 @@
 
 #include "llama-cpp.h"
 
+extern int llama_build_number(void);
+extern const char *llama_commit(void);
+extern const char *llama_compiler(void);
+extern const char *llama_build_target(void);
+extern const char *llama_build_info(void);
+
 /// ===========
 ///  Utilities
 /// ===========
@@ -939,6 +945,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
   print("  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", params.results_dir);
   print("  --verbose                per-round recap: drafter, accepted n/k, draft vs target, token ids (default: {})", params.verbose ? "true" : "false");
+  print("  --version                show version information and exit");
   print("");
   print("Misc:");
   print("  -h, --help               print this message and exit");
@@ -1004,6 +1011,11 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
         }
       } else if (std::strcmp(argv[i], "--greedy") == 0) {
         params.greedy = true;
+      } else if (std::strcmp(argv[i], "--version") == 0) {
+        print("ggml version:      {}", ggml_version());
+        print("llama.cpp version: {} ({})", llama_build_number(), llama_commit());
+        print("built with:        {} for {}", llama_compiler(), llama_build_target());
+        std::exit(0);
       } else if (std::strcmp(argv[i], "--verbose") == 0) {
         params.verbose = true;
       } else if (std::strcmp(argv[i], "--ngram") == 0) {
