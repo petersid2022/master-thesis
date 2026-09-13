@@ -1,72 +1,76 @@
-% Optimizing Text Generation with Large Language Models via Speculative Sampling
-% Master's thesis -- Petros Sideris
-% Department of Electrical and Computer Engineering,
-% Democritus University of Thrace (DUTH)
-%
-% Build:  latexmk -pdf thesis.tex     (latexmk runs biber automatically)
-
 \documentclass[a4paper,12pt]{report}
 
-% --- Language and Computer Modern fonts (LuaLaTeX + fontspec) ----------------
-% Built with LuaLaTeX so Greek (e.g. \chapter{Εισαγωγή}) and any UTF-8 render.
-% New Computer Modern (NewCM) is the modern, Unicode OpenType incarnation of
-% Knuth's Computer Modern -- the classic default (La)TeX look -- with FULL Greek
-% (monotonic + polytonic) in every weight, so the chapter titles and babel's
-% Greek captions ("Κεφάλαιο", "Βιβλιογραφία") render bold/italic correctly.
-% (Plain Latin Modern's OTF carries NO Greek, hence NewCM.)  Loaded by file name
-% so the bold/italic faces link unambiguously.  LuaTeX is natively UTF-8.
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{amsthm}
 \usepackage{fontspec}
 \usepackage{unicode-math}
-\setmainfont{NewCM10-Regular.otf}[          % Computer Modern (Unicode), full Greek
+\setmainfont{NewCM10-Regular.otf}[
   BoldFont       = NewCM10-Bold.otf,
   ItalicFont     = NewCM10-Italic.otf,
-  BoldItalicFont = NewCM10-BoldItalic.otf]
-\setsansfont{NewCMSans10-Regular.otf}[      % CM sans, full Greek
+BoldItalicFont = NewCM10-BoldItalic.otf]
+\setsansfont{NewCMSans10-Regular.otf}[
   BoldFont       = NewCMSans10-Bold.otf,
   ItalicFont     = NewCMSans10-Oblique.otf,
-  BoldItalicFont = NewCMSans10-BoldOblique.otf]
-\setmonofont{NewCMMono10-Regular.otf}[      % CM typewriter (code listings)
+BoldItalicFont = NewCMSans10-BoldOblique.otf]
+\setmonofont{NewCMMono10-Regular.otf}[
   BoldFont       = NewCMMono10-Bold.otf,
   ItalicFont     = NewCMMono10-Italic.otf,
-  BoldItalicFont = NewCMMono10-BoldOblique.otf]
-\setmathfont{NewCMMath-Regular.otf}         % Computer Modern math (math Greek incl.)
-\usepackage[english,greek]{babel}          % main = Greek; English available
-\usepackage{microtype}                     % full micro-typography under LuaTeX
+BoldItalicFont = NewCMMono10-BoldOblique.otf]
+\setmathfont{NewCMMath-Regular.otf}
+\usepackage[english,greek]{babel}
+\addto\captionsgreek{%
+  \renewcommand{\tablename}{Πίνακας}%
+  \renewcommand{\listtablename}{Κατάλογος Πινάκων}%
+  \renewcommand{\figurename}{Σχήμα}%
+  \renewcommand{\listfigurename}{Κατάλογος Σχημάτων}%
+}
+\usepackage{microtype}
 
-% --- Page layout, headers, and floats ---------------------------------------
 \usepackage[a4paper,left=3cm,right=3cm,top=2.5cm,bottom=2.5cm,headheight=15pt]%
-           {geometry}
+{geometry}
 \usepackage{fancyhdr}
 \usepackage{graphicx}
-\usepackage{booktabs}              % publication-quality tables
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,babel}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots}
+\pgfplotsset{compat=1.18}
+\usepackage{booktabs}
 \usepackage{enumitem}
-\usepackage{siunitx}               % numbers and units
+\usepackage{siunitx}
+\sisetup{detect-all}
 \usepackage{xcolor}
-\usepackage{listings}              % source-code listings
-\usepackage[autostyle]{csquotes}   % context-sensitive quotation marks
+\definecolor{tgtC}{HTML}{2B6CB0}
+\definecolor{dftC}{HTML}{2F855A}
+\definecolor{rejC}{HTML}{C53030}
+\definecolor{bonC}{HTML}{6B46C1}
+\definecolor{arC}{HTML}{718096}
+\definecolor{inkC}{HTML}{1A202C}
+\usepackage{listings}
+\usepackage{placeins}
+\usepackage[autostyle]{csquotes}
 
-% --- Bibliography (biblatex + biber) ----------------------------------------
 \usepackage[backend=biber,style=numeric-comp,sorting=none,giveninits=true]%
-           {biblatex}
+{biblatex}
 \addbibresource{thesis.bib}
 
-% --- Hyperlinks and smart cross-references ----------------------------------
-% hyperref must be loaded before cleveref.
 \usepackage[colorlinks=true,linkcolor=black,citecolor=black,%
-            urlcolor={blue!55!black},plainpages=false,pdfpagelabels,%
-            hypertexnames=false]{hyperref}
-\usepackage{bookmark}              % robust single-pass PDF bookmarks/outlines
+  urlcolor={blue!55!black},plainpages=false,pdfpagelabels,%
+hypertexnames=false]{hyperref}
+\usepackage{bookmark}
 \usepackage[capitalise,nameinlink]{cleveref}
+\crefname{figure}{σχήμα}{σχήματα}
+\Crefname{figure}{Σχήμα}{Σχήματα}
+\crefname{table}{πίνακας}{πίνακες}
+\Crefname{table}{Πίνακας}{Πίνακες}
 
 \hypersetup{
-  pdftitle  = {Optimizing Text Generation with Large Language Models via
-               Speculative Sampling},
+  pdftitle  = {Optimizing Text Generation with Large Language Models
+  via Speculative Sampling},
   pdfauthor = {Petros Sideris},
 }
 
-% --- Theorem-like environments ----------------------------------------------
 \theoremstyle{plain}
 \newtheorem{theorem}{Theorem}[chapter]
 \newtheorem{lemma}{Lemma}[chapter]
@@ -76,7 +80,16 @@
 \theoremstyle{remark}
 \newtheorem{remark}{Remark}[chapter]
 
-% --- Source-code listing style ----------------------------------------------
+\newcommand{\draftnote}[1]{%
+  \par\smallskip
+  {\sloppy\noindent\itshape\color{black!55}[#1]\par}%
+\smallskip}
+
+\newcommand{\todo}[1]{%
+  \par\smallskip
+  {\sloppy\noindent\color{red!65!black}\textbf{TODO:} #1\par}%
+\smallskip}
+
 \definecolor{codegray}{gray}{0.45}
 \definecolor{codekeyword}{rgb}{0.13,0.13,0.55}
 \definecolor{codestring}{rgb}{0.00,0.40,0.00}
@@ -96,7 +109,6 @@
   tabsize         = 2,
 }
 
-% --- Running headers --------------------------------------------------------
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\nouppercase{\leftmark}}
@@ -108,15 +120,13 @@
   \renewcommand{\headrulewidth}{0pt}%
 }
 
-% --- "Month Year" helper for the title page ---------------------------------
 \newcommand{\monthyear}{%
   \ifcase\month\or January\or February\or March\or April\or May\or June\or
   July\or August\or September\or October\or November\or December\fi
-  \space\number\year}
+\space\number\year}
 
 \begin{document}
 
-% ============================== Title page ==================================
 \begin{titlepage}
   \centering
   {\scshape\LARGE Democritus University of Thrace\par}
@@ -126,8 +136,8 @@
   {\large Master's Thesis\par}
   \vspace{1.0cm}
   \rule{\linewidth}{0.4pt}\\[0.7\baselineskip]
-  {\huge\bfseries Optimizing Text Generation with Large Language Models
-   via Speculative Sampling\par}
+  {\huge\bfseries Optimizing Text Generation with Large Language
+  Models via Speculative Sampling\par}
   \vspace{0.7\baselineskip}
   \rule{\linewidth}{0.4pt}\par
   \vspace{2.5cm}
@@ -150,106 +160,1237 @@
 % ============================ Front matter ==================================
 \pagenumbering{roman}
 
-\chapter*{Abstract}
-\addcontentsline{toc}{chapter}{Abstract}
-This thesis investigates the speculative sampling technique,
-with the goal of using a small language model (SLM) in place of a large one (LLM) 
-when the SLM performs equally well.
-The large model is activated only when necessary.
-Experiments will be conducted to compare different approaches,
-measuring response time and energy consumption
-in relation to the baseline large models.
-The focus will be on:
-(a)~the selection of appropriate models, and
-(b)~their impact on both accuracy and efficiency.
+\chapter*{Περίληψη}
+\addcontentsline{toc}{chapter}{Περίληψη}
+
+Η αυτοπαλινδρομική παραγωγή κειμένου με μεγάλα γλωσσικά μοντέλα είναι σειριακή:
+κάθε νέο token απαιτεί πλήρες πέρασμα από το δίκτυο, ενώ η GPU συχνά περιμένει
+τη μνήμη. Η κερδοσκοπική αποκωδικοποίηση (speculative decoding) δεν προσεγγίζει
+και δεν παρακάμπτει το μεγάλο μοντέλο. Ένας φθηνότερος drafter προτείνει ένα
+μπλοκ υποψηφίων tokens και το μοντέλο-στόχος τα επαληθεύει σε ένα batched
+πέρασμα. Τα αποδεκτά tokens είναι εκείνα που θα επέλεγε ο στόχος με την ίδια
+πολιτική δειγματοληψίας. Όσα δεν συμφωνούν απορρίπτονται και ο στόχος εκπέμπει
+διόρθωση. Όταν η πρόταση συμφωνεί αρκετά, πολλά tokens εκπέμπονται ανά ανάγνωση
+των βαρών του ακριβού μοντέλου.
+
+Η εργασία σχεδιάζει και υλοποιεί το \texttt{spectre}, μια μηχανή συμπερασμού
+πάνω από τη \texttt{libllama}, για ελεγχόμενη σύγκριση τριών διαδρομών:
+αυτοπαλινδρομική βάση, κερδοσκοπία με πρόχειρο μοντέλο, και υβριδική διαδρομή
+που δοκιμάζει πρώτα n-gram lookup στο ήδη αποδεκτό ιστορικό. Ο επαληθευτής
+κρατά ένα draft token μόνον όταν ταυτίζεται με το δείγμα του target sampler.
+Αυτός ο κανόνας δεν είναι ο στοχαστικός κανόνας \(p/q\) του Leviathan.
+
+Σε σταθμό εργασίας με GPU NVIDIA RTX A6000 συγκρίθηκαν greedy εκτελέσεις του
+ζεύγους Qwen2.5-14B (Q4\_K\_M) και Qwen2.5-1.5B (Q8\_0), σε ένα prompt
+παραγωγής κώδικα και προϋπολογισμό 256 tokens. Η μόνη διαμόρφωση που ήταν
+ταυτόχρονα ταχύτερη και φθηνότερη ανά token από τη βάση ήταν η υβριδική με
+\(n_{\max}=8\) (\(65.0\) έναντι \(60.4\) tok/s, \(4.20\) έναντι \(4.96\)
+J/token). Η κερδοσκοπία μόνο με πρόχειρο μοντέλο δεν επιτάχυνε. Η ταύτιση
+token-by-token με τη βάση ίσχυσε σε μία από τις έξι κερδοσκοπικές εκτελέσεις.
+Τα αποτελέσματα αφορούν τη συγκεκριμένη καμπάνια και δεν γενικεύονται ως
+καθολική επιτάχυνση.
 
 \vspace{1.5em}
-\noindent\textbf{Keywords:}
-speculative sampling, speculative decoding, large language models,
-text generation, inference optimization, latency, energy efficiency,
+\noindent\textbf{Λέξεις-κλειδιά:}
+κερδοσκοπική αποκωδικοποίηση, κερδοσκοπική δειγματοληψία, μεγάλα γλωσσικά
+μοντέλα, βελτιστοποίηση συμπερασμού, καθυστέρηση, ενεργειακή αποδοτικότητα,
 \texttt{llama.cpp}.
 
+\begin{otherlanguage}{english}
+  \chapter*{Abstract}
+  \addcontentsline{toc}{chapter}{Abstract}
+
+  Autoregressive text generation with large language models is sequential: each
+  new token requires a full forward pass, and the GPU often waits on memory.
+  Speculative decoding neither approximates nor skips the large model. A cheaper
+  drafter proposes a block of candidate tokens, and the target verifies them in
+  one batched pass. Accepted tokens are those the target would have chosen under
+  the same sampler; rejected drafts are dropped and the target emits a
+  correction. When agreement is high enough, several tokens are emitted per
+  expensive weight read.
+
+  This thesis designs and implements \texttt{spectre}, a \texttt{libllama}-based
+  inference engine for a controlled comparison of three paths: an autoregressive
+  baseline, model-drafted speculation, and a hybrid path that first tries
+  n-gram lookup in the already accepted history. The verifier keeps a draft
+  token only when it equals the target sampler's choice. That rule is not
+  Leviathan's stochastic \(p/q\) acceptance test.
+
+  On a workstation GPU (NVIDIA RTX A6000), greedy runs of Qwen2.5-14B
+  (Q4\_K\_M) with a Qwen2.5-1.5B (Q8\_0) draft were compared on one code prompt
+  and a budget of 256 tokens. The only configuration that was both faster and
+  cheaper per token than the baseline was hybrid drafting with \(n_{\max}=8\)
+  (\(65.0\) vs \(60.4\) tok/s, \(4.20\) vs \(4.96\) J/token). Model-only
+  speculation did not improve throughput. Token-by-token identity with the
+  baseline held in one of the six speculative runs. These figures describe this
+  campaign; they are not a universal speedup.
+
+  \vspace{1.5em}
+  \noindent\textbf{Keywords:}
+  speculative decoding, speculative sampling, large language models,
+  inference optimization, latency, energy efficiency, \texttt{llama.cpp}.
+\end{otherlanguage}
+
+\chapter*{Ευχαριστίες}
+\addcontentsline{toc}{chapter}{Ευχαριστίες}
+
+Ευχαριστώ τον επιβλέποντα καθηγητή κ.\ Παύλο Σ.\ Ευραμίδη για την καθοδήγηση
+και την ελευθερία να αντιμετωπίσω το πρόβλημα ως θέμα συστημάτων και όχι ως
+άσκηση αναπαραγωγής ενός έτοιμου αριθμού επιτάχυνσης. Ευχαριστώ επίσης το
+Τμήμα Ηλεκτρολόγων Μηχανικών και Μηχανικών Υπολογιστών του ΔΠΘ, όσους
+παραχώρησαν χρόνο σε απομακρυσμένο υπολογιστικό εξοπλισμό, και την οικογένειά
+μου για τη σταθερή υποστήριξη κατά τη διάρκεια της εργασίας.
+
 \tableofcontents
+\cleardoublepage
+\phantomsection\addcontentsline{toc}{chapter}{\listtablename}
+\listoftables
+\cleardoublepage
+\phantomsection\addcontentsline{toc}{chapter}{\listfigurename}
+\listoffigures
 
 % =============================== Body =======================================
 \clearpage
 \pagenumbering{arabic}
 
 \chapter{Εισαγωγή}
-\section{Το πρόβλημα χρονοπρογραμματισμού του συμπερασμού}
-Η βέλτιστη συνύπαρξη πολλαπλών εκτελούμενων διεργασιών στη μνήμη ενός υπολογιστή, γνωστή στην βιβλογραφία ως Scheduling, αποτελεί μία απο τις σημαντικότερες προκλήσεις στην έρευνα των  Μεγάλων Γλωσσικών Μοντέλων (LLMs), ενώ παράλληλα έχει λειτουργήσει ως καταλύτης για σημαντικές ερευνητικές εξελίξεις. Αντλώντας έμπνευση από την Θεωρία Βελτιστοποίησης Μεταγλωττιστή (Compiler Optimization Theory), σύμφωνα με την οποία η σχεδίαση ενός βελτιστοποιημένου μεταγλωττιστή (σε πτυχές όπως η ελαχιστοποίηση του χρόνου εκτέλεσης ή της βέλτισης παραγωγής γλώσσας μηχανής) μπορεί να επιτευχθεί με την εφαρμογή πληθώρων τεχνικών όπως η 
-% This research addresses the inference scheduling problem,
-% drawing from compiler optimization theory
-% (e.g., branch prediction, profile-guided optimization, instruction scheduling)
-% to minimize both latency and energy usage.
-% These parallels arise from the fact that LLM inference can be viewed as 
-% computational pipeline,
-% similar to how compilers treat code as a sequence or graph to optimize
-% (see \href{https://en.wikipedia.org/wiki/Abstract_syntax_tree}{Abstract Syntax Tree}).
-% Previous research shows speedups of 2--3\(\times\) from speculative decoding
-% alone~\cite{LKM23,Che23},
-% and layering compiler-inspired optimizations could yield even greater
-% improvements,
-% especially for edge cases like long sequences or low-acceptance-rate drafts.
+\label{ch:intro}
 
-% Speculative decoding functions as follows:
-% \begin{itemize}
-%   \item The small LLM generates a series of sequential tokens,
-%         after which the large LLM evaluates all of these in a single pass.
-%   \item For each token, if the probability in the large LLM is higher than that
-%         of the small one, it is accepted directly
-%         (therefore not affecting the large LLM's statistics).
-%         If the probability is lower, the likelihood of acceptance is
-%         proportional to the difference in probabilities.
-%         This method makes it likely that the token will not be accepted,
-%         in which case the computation is wasted.
-%         If the small model performs well,
-%         we gain a speedup without changing the output,
-%         but if it performs poorly,
-%         we waste significant compute resources, slowing down the process.
-%         \emph{(See \href{https://en.wikipedia.org/wiki/Branch_predictor}{Branch Predictor}.)}
-%   \item Speculative decoding variants allow tokens to exit the model early if
-%         the model is confident,
-%         similar to compiler optimizations like function inlining or dead code
-%         elimination, which skip unnecessary computations.
-%   \item Speculative sampling often builds a tree of possible token paths during
-%         text generation.
-%         We can apply compiler-style graph transformations
-%         (e.g., pruning redundant branches via static analysis or common
-%         subexpression elimination on token probabilities)
-%         to optimize the tree exploration.
-%   \item Just as compilers schedule operations for parallel execution,
-%         speculative sampling could \enquote{schedule} token generation to
-%         prioritize high-probability paths,
-%         inspired by compiler techniques for out-of-order execution.
-% \end{itemize}
+Η παραγωγή κειμένου με μεγάλο γλωσσικό μοντέλο (Large Language Model, LLM)
+γίνεται σχεδόν πάντα ένα token τη φορά: το μοντέλο προβλέπει, προσαρτά το
+αποτέλεσμα στο πρόθεμα και επαναλαμβάνει. Κάθε τέτοιο βήμα απαιτεί πλήρες
+πέρασμα από το δίκτυο. Σε μικρό batch η αριθμητική τελειώνει πολύ πριν
+ολοκληρωθεί η ανάγνωση των βαρών, οπότε η GPU μένει υποαπασχολημένη περιμένοντας
+τη μνήμη~\cite{shazeer2019fast,pope2023efficiently,leviathan2023fast}. Το
+αποτέλεσμα είναι υψηλή καθυστέρηση ανά token και, στην πράξη, υψηλή ενέργεια
+ανά παραγόμενο token.
 
-% \section{Research directions and objectives}
-% This thesis frames LLM inference through the lens of compiler optimization
-% and explores the following directions and objectives:
-% \begin{itemize}
-%   \item \href{https://en.wikipedia.org/wiki/Scheduling_(computing)}{Scheduling (computing)}.
-%   \item Compiler-inspired runtime design for speculative text generation with
-%         multi-model pipelines.
-%   \item Prediction-and-scheduling runtime with compiler-like heuristics.
-%   \item Code generation for inference graphs.
-%   \item SLM--LLM pipeline as an intermediate representation (IR).
-%   \item Adaptive runtime scheduler (like a JIT) for inference.
-%   \item Profiling framework that drives scheduling decisions.
-%   \item Performance/energy trade-offs akin to compiler optimization trade-offs.
-%   \item Investigate the impact of speculative sampling on LLM performance.
-%   \item Develop methods to enhance the diversity of generated text.
-%   \item Propose optimizations to improve generation speed while maintaining
-%         high-quality output.
-% \end{itemize}
+Η κερδοσκοπική αποκωδικοποίηση δεν προσεγγίζει τον στόχο και δεν τον
+παρακάμπτει~\cite{leviathan2023fast,chen2023accelerating,vllm-speculators-docs}.
+Ένας μικρότερος, ταχύτερος drafter προτείνει συνέχεια μήκους \(k\). Το
+μοντέλο-στόχος επαληθεύει την πρόταση σε ένα batched πέρασμα, από αριστερά
+προς τα δεξιά. Η επαλήθευση δεν είναι δεύτερο αυτοπαλινδρομικό decode. Είναι
+ένα πέρασμα που βαθμολογεί όλες τις προτεινόμενες θέσεις μαζί, επειδή η
+συνέχεια δίνεται ως υπόθεση και δεν χρειάζεται να παραχθεί σειριακά από τον
+στόχο. Τα αποδεκτά tokens είναι εκείνα που θα παρήγαγε ο στόχος με την ίδια
+πολιτική δειγματοληψίας. Όσα δεν συμφωνούν απορρίπτονται και ο στόχος εκπέμπει
+διόρθωση ή, σε πλήρη συμφωνία, ένα bonus token από το ίδιο πέρασμα. Η ωφέλεια,
+όταν υπάρχει, προέρχεται από τη μετατροπή του σειριακού decode που δεσμεύεται
+από τη μνήμη σε παράλληλη επαλήθευση που δεσμεύεται από την αριθμητική, όχι από
+λιγότερες κλήσεις του μεγάλου μοντέλου.
+
+\section{Το πρόβλημα}
+
+Στη φάση \emph{prefill} το prompt επεξεργάζεται παράλληλα και γεμίζει την
+κρυφή μνήμη κλειδιών--τιμών (KV cache). Στη φάση \emph{decode} κάθε νέο token
+είναι εξάρτηση δεδομένων από το προηγούμενο, άρα ένα πλήρες πέρασμα ανά
+έξοδο. Για μικρό batch η αριθμητική ένταση είναι χαμηλή: μεταφέρονται σχεδόν
+όλα τα βάρη για λίγες πράξεις ανά παράμετρο~\cite{pope2023efficiently}. Ο
+κβαντισμός μειώνει τα bytes ανά βάρος. Η κερδοσκοπία κινείται σε ανεξάρτητο
+άξονα: αποσβένει μία ανάγνωση βαρών του στόχου σε περισσότερα εκπεμπόμενα
+tokens, εφόσον ο drafter είναι αρκετά φθηνός και αρκετά εύστοχος.
+
+Αυτή η ανταλλαγή «λιγότερα βήματα decode έναντι περισσότερης αριθμητικής ανά
+βήμα» είναι συμφέρουσα κυρίως όταν η GPU έχει πλεονάζουσα υπολογιστική
+ικανότητα, δηλαδή όταν εξυπηρετεί λίγα αιτήματα ταυτόχρονα~\cite{vllm-speculative-docs}.
+Σε μεγάλο batch τα υποψήφια tokens ανταγωνίζονται τα πραγματικά για τους ίδιους
+πόρους και η απόρριψη κοστίζει. Η παρούσα εργασία μετρά τη μονο-ακολουθιακή
+περίπτωση, όπου η μέθοδος έχει το ισχυρότερο κίνητρο.
+
+Χρόνος και ενέργεια πρέπει να μετρώνται μαζί. Μια διαμόρφωση μπορεί να
+μειώνει τα ms/token αυξάνοντας ταυτόχρονα τη μέση ισχύ, ή το αντίστροφο. Η
+μετρική που αντιστοιχεί στο κόστος μιας απάντησης είναι η ενέργεια ανά
+εκπεμπόμενο token στο παράθυρο decode, όχι η στιγμιαία ισχύς.
+
+\section{Τι εξετάζει η εργασία}
+
+Το οικοσύστημα \texttt{llama.cpp} υποστηρίζει ήδη κερδοσκοπία με πρόχειρο
+μοντέλο, n-gram παραλλαγές και νεότερους drafters~\cite{llamacpp-speculative}.
+Το ίδιο πρακτικό δίλημμα εμφανίζεται και αλλού: ξεχωριστός drafter
+για μεγαλύτερη
+μείωση καθυστέρησης, ή n-gram χωρίς επιπλέον
+μοντέλο~\cite{vllm-speculative-docs}.
+Το ανοικτό ερώτημα για την παρούσα μελέτη δεν είναι η επινόηση ενός νέου
+θεωρήματος αποδοχής. Είναι συστημικό και εμπειρικό: πώς συγκρίνονται, στο
+ίδιο υλικό και με την ίδια πολιτική δειγματοληψίας, η αυτοπαλινδρομική βάση,
+η κερδοσκοπία με μικρό μοντέλο της ίδιας οικογένειας, και μια υβριδική
+διαδρομή που προτάσσει ντετερμινιστικό lookup στο ιστορικό.
+
+Για τον έλεγχο αυτών των διαδρομών αναπτύχθηκε το \texttt{spectre}. Η μηχανή
+φορτώνει βάρη GGUF μέσω της \texttt{libllama}, εκτελεί τις τρεις διαδρομές με
+κοινό recorder και γράφει ανά εκτέλεση τα αρχεία \texttt{meta.json} και
+\texttt{tokens.csv}. Η επιλογή ξεχωριστού πειραματικού δυαδικού, αντί μόνο
+του \texttt{llama-cli}, επιτρέπει σταθερή σημασιολογία μετρητών και άμεση
+σύγκριση χωρίς να αλλάζει το μοντέλο-στόχος.
+
+\section{Στόχος και ερευνητικά ερωτήματα}
+\label{sec:rq}
+
+Ο στόχος είναι διπλός. Πρώτον, να υλοποιηθεί ένας επαληθεύσιμος μηχανισμός
+κερδοσκοπίας πάνω από υπάρχοντα μοντέλα GGUF. Δεύτερον, να μετρηθούν
+καθυστέρηση, αποδοχή και ενέργεια decode σε ελεγχόμενη σύγκριση, χωρίς να
+παρουσιάζεται σχεδιαστικός στόχος ως αποτέλεσμα.
+
+Τα ερωτήματα είναι τα εξής.
+
+\begin{description}[style=nextline,leftmargin=1.6em,font=\bfseries]
+  \item[RQ1.]
+    Παράγει η greedy κερδοσκοπική διαδρομή την ίδια ακολουθία \texttt{token\_id}
+    με την greedy αυτοπαλινδρομική βάση, για κοινό prompt, μοντέλο-στόχο και
+    όριο παραγωγής;
+  \item[RQ2.]
+    Πώς μεταβάλλονται αποδοχή, ρυθμαπόδοση και καθυστέρηση decode όταν αλλάζουν
+    η στρατηγική drafting και το \(n_{\max}\);
+  \item[RQ3.]
+    Πώς μεταφράζονται οι ίδιες διαμορφώσεις σε ενέργεια ανά token στο παράθυρο
+    decode, στο συγκεκριμένο GPU;
+  \item[RQ4.]
+    Ποιοι πρακτικοί περιορισμοί εμφανίζονται όταν η κερδοσκοπία ενσωματώνεται
+    ως πειραματική μηχανή στο οικοσύστημα \texttt{llama.cpp};
+\end{description}
+
+Η RQ1 απαντάται με ταύτιση ακολουθίας, όχι με perplexity. Η RQ2 έχει κύρια
+μετρική τα tok/s decode έναντι της βάσης και δευτερεύουσα το ποσοστό αποδοχής
+προτάσεων. Η RQ3 έχει κύρια μετρική τα J/token. Η RQ4 απαντάται ποιοτικά από
+την υλοποίηση, την καταγραφή και την εμπειρία ενσωμάτωσης.
+
+\section{Συνεισφορές και όρια}
+
+Η εργασία παραδίδει τα εξής.
+
+\begin{enumerate}[leftmargin=*]
+  \item
+    Τη μηχανή \texttt{spectre}: κοινό μοντέλο-στόχο, προαιρετικό πρόχειρο
+    μοντέλο, n-gram lookup και επαληθευτή συμφωνίας sampler.
+  \item
+    Πειραματικό πρωτόκολλο με αποθήκευση παραμέτρων, μετρητών ανά γύρο και
+    πιθανότητας στόχου ανά εκπεμπόμενο token.
+  \item
+    Μια πρώτη μετρητική καμπάνια σε RTX A6000, με ενέργεια decode μέσω NVML,
+    που δείχνει πότε η κερδοσκοπία πληρώνει το κόστος της και πότε όχι.
+  \item
+    Σαφή διάκριση ανάμεσα στον canonical αλγόριθμο του
+    Κεφαλαίου~\ref{ch:background}
+    και στον greedy επαληθευτή που εκτελεί ο κώδικας.
+\end{enumerate}
+
+Εκτός εύρους παραμένουν η δενδρική κερδοσκοπία, οι learned heads τύπου
+Medusa/EAGLE, ο στοχαστικός κανόνας \(p/q\), η προσαρμοστική επιλογή
+\(n_{\max}\) και οποιοσδήποτε πραγματικός χρονοπρογραμματιστής μεταγλωττιστή
+ή ετερογενούς SoC. Η αναλογία με πρόβλεψη διακλάδωσης και ιεραρχία κρυφής
+μνήμης χρησιμοποιείται μόνο ως μεταφορά κόστους στην υβριδική διαδρομή.
+
+\section{Διάρθρωση}
+
+Το Κεφάλαιο~\ref{ch:background} δίνει τις έννοιες που χρησιμοποιούνται στη
+συνέχεια: αυτοπαλινδρομικό decode, canonical speculative sampling, αποδοχή
+και n-gram lookup. Το Κεφάλαιο~\ref{ch:related} τοποθετεί την εργασία ως προς
+τις κύριες οικογένειες drafters. Το Κεφάλαιο~\ref{ch:spectre} περιγράφει την
+υλοποίηση. Το Κεφάλαιο~\ref{ch:setup} παγώνει το πειραματικό πρωτόκολλο. Το
+Κεφάλαιο~\ref{ch:results} απαντά τα ερευνητικά ερωτήματα με τα δεδομένα της
+καμπάνιας. Το Κεφάλαιο~\ref{ch:discussion} ερμηνεύει τα ευρήματα και ορίζει
+λίγες επόμενες κινήσεις. Το Κεφάλαιο~\ref{ch:conclusions} συνοψίζει.
+
+\chapter{Θεωρητικό υπόβαθρο}
+\label{ch:background}
+
+Το κεφάλαιο περιορίζεται σε ό,τι χρειάζεται για να διαβαστούν η υλοποίηση, οι
+μετρικές και τα αποτελέσματα. Δεν είναι επισκόπηση των Transformers.
+
+\section{Ορολογία και συμβολισμός}
+\label{sec:terminology}
+
+\begin{table}[ht]
+  \centering
+  \caption{Συμβολισμός που παραμένει σταθερός στη συνέχεια.}
+  \label{tab:notation}
+  \small
+  \begin{tabular}{@{}llp{7.4cm}@{}}
+    \toprule
+    Σύμβολο ή όρος & Αγγλικά & Σημασία \\
+    \midrule
+    \(p(\cdot\mid h)\) & target distribution & κατανομή του
+    μοντέλου-στόχου μετά το πρόθεμα \(h\) \\
+    \(q(\cdot\mid h)\) & draft distribution & κατανομή του drafter
+    στο ίδιο πρόθεμα \\
+    \(k\), \(n_{\max}\) & draft length & μέγιστος αριθμός
+    προτεινόμενων tokens ανά γύρο \\
+    \(\alpha\) & acceptance & πιθανότητα αποδοχής ενός προτεινόμενου token \\
+    target & target model & μοντέλο από το οποίο επιθυμούμε δείγματα \\
+    draft / drafter & draft model / drafter & μηχανισμός πρότασης \\
+    proposal & proposal & ακολουθία υποψηφίων tokens \\
+    speculative round & round & μία πρόταση, μία επαλήθευση, μία
+    ενημέρωση κατάστασης \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Όταν συζητείται ο canonical στοχαστικός αλγόριθμος, οι \(p\) και \(q\) είναι
+οι κατανομές \emph{μετά} την πολιτική δειγματοληψίας (temperature, top-\(k\),
+top-\(p\), γραμματικοί περιορισμοί). Η softmax επί των ακατέργαστων logits δεν
+ταυτίζεται κατ' ανάγκη με αυτή την κατανομή~\cite{holtzman2020curious}.
+
+\section{Decoder-only μοντέλα και το επόμενο token}
+
+Η αρχιτεκτονική Transformer~\cite{vaswani2017attention} αντικατέστησε τη
+σειριακή επεξεργασία των αναδρομικών δικτύων με αυτοπροσοχή. Τα μοντέλα
+παραγωγής κειμένου που χρησιμοποιούνται εδώ είναι decoder-only: GPT,
+Llama, Qwen, Mistral,
+Gemma~\cite{brown2020language,touvron2023llama,qwen2p5,jiang2023mistral,gemma2024}.
+Κάθε θέση βλέπει μόνο το ήδη αποδεκτό πρόθεμα, μέσω αιτιατής μάσκας
+(causal mask). Ο όρος δεν δηλώνει αιτιακή σχέση μεταξύ λέξεων. Δηλώνει
+περιορισμό ορατότητας ώστε η εκπαίδευση να είναι συνεπής με την
+αυτοπαλινδρομική παραγωγή.
+
+Έστω η ακολουθία token
+\[
+  A \quad B \quad C \quad D \quad E.
+\]
+Το μοντέλο υπολογίζει
+\[
+  P(F \mid A,B,C,D,E).
+\]
+Στη θέση του \(E\) βλέπει \(A\,B\,C\,D\,E\) και κανένα μεταγενέστερο token.
+Η ίδια ακολουθία επανέρχεται στην ενότητα~\ref{sec:batched-verify}:
+εκεί φαίνεται
+γιατί η βαθμολόγηση μιας πρότασης \(D\,E\,F\) δεν απαιτεί τρία χωριστά
+αυτοπαλινδρομικά περάσματα του στόχου.
+
+Πριν από το δίκτυο, ο tokenizer μετατρέπει το κείμενο σε ακέραια
+αναγνωριστικά. Ο πίνακας embeddings απεικονίζει κάθε αναγνωριστικό σε
+διάνυσμα. Μετά από διαδοχικά στρώματα προσοχής και τροφοδοτικών δικτύων, η
+τελική προβολή παράγει logits στο μέγεθος του λεξιλογίου. Η πολιτική
+δειγματοληψίας επιλέγει το επόμενο token: greedy \(\arg\max\), ή στοχαστικά
+μετά από temperature / top-\(k\) / top-\(p\).
+
+Τα encoder-only μοντέλα, όπως το BERT~\cite{devlin2019bert}, χρησιμοποιούν
+αμφίδρομη προσοχή και δεν αποτελούν τη μηχανή παραγωγής της εργασίας. Τα
+encoder--decoder μοντέλα παραλείπονται για τον ίδιο λόγο.
+
+\section{Prefill, decode και KV cache}
+
+Κατά το prefill όλα τα tokens του prompt επεξεργάζονται μαζί. Τα κλειδιά και
+οι τιμές προσοχής αποθηκεύονται ανά στρώμα στην KV cache, ώστε να μην
+επανυπολογίζεται το πρόθεμα σε κάθε επόμενο βήμα. Κατά το decode εισέρχεται
+συνήθως ένα νέο token. Η θέση του στην cache και η περιστροφική κωδικοποίηση
+θέσης (RoPE) πρέπει να συμφωνούν με το αποδεκτό μήκος της
+ακολουθίας~\cite{su2024roformer}.
+
+Αυτή η σειριακή εξάρτηση είναι ο λόγος που η παραγωγή \(k\) μελλοντικών
+tokens δεν παραλληλοποιείται απευθείας: το token \(i+1\) δεν είναι γνωστό πριν
+επιλεγεί το \(i\). Η κερδοσκοπία δεν καταργεί την εξάρτηση. Την παρακάμπτει
+προσωρινά, υποθέτοντας μια συνέχεια και ελέγχοντάς την εκ των υστέρων.
+
+\section{Κόστος του decode και κίνητρο της batched επαλήθευσης}
+\label{sec:batched-verify}
+
+Για μικρό batch, ένα βήμα decode μεταφέρει σχεδόν ολόκληρο το σύνολο των
+βαρών ώστε να παραχθεί ένα token~\cite{shazeer2019fast,pope2023efficiently}.
+Η GPU έχει τότε πλεονάζουσα αριθμητική: περιμένει τη μνήμη. Ο ισχυρισμός
+«memory-bandwidth-bound» ισχύει υπό προϋποθέσεις: μικρό batch, στρώματα στη
+συσκευή, dense μοντέλο. Σε μεγάλο batch, σε Mixture-of-Experts με διαφορετικό
+ενεργό υποσύνολο, ή όταν μέρος των στρωμάτων εκτελείται στην CPU, το ισοζύγιο
+αλλάζει.
+
+Η πρώτη ανάγνωση της επαλήθευσης μοιάζει να ακυρώνει τη μέθοδο: για να κριθεί
+αν ένα υποψήφιο token είναι «σωστό», ο στόχος πρέπει τάχα να παράγει πρώτα
+το επόμενο token μόνος του. Αυτό θα ήταν απλώς αυτοπαλινδρομικό decode. Το
+σημείο που λείπει είναι ότι το «σωστό» δεν απαιτεί σειριακή παραγωγή. Απαιτεί
+την κατανομή του στόχου σε κάθε προτεινόμενη θέση. Όταν η συνέχεια είναι ήδη
+γνωστή ως πρόταση, κάθε πρόθεμα της πρότασης είναι διαθέσιμο, άρα ο αιτιατός
+Transformer μπορεί να υπολογίσει όλες αυτές τις κατανομές σε ένα πέρασμα.
+Η πρόταση αντιμετωπίζεται ως σύντομο prompt. Μετά τα στρώματα προσοχής, η
+τελική προβολή παράγει logits στο λεξιλόγιο για κάθε υποψήφια θέση. Η
+αποδοχή διατρέχει τις θέσεις από αριστερά προς τα δεξιά και κρατά το μακρύτερο
+πρόθεμα που συμφωνεί με το δείγμα του στόχου, ή με τον στοχαστικό κανόνα
+αποδοχής της ενότητας~\ref{sec:canonical}. Μετά την πρώτη απόρριψη τα
+δεξιότερα logits ανήκουν
+σε ιστορικό που δεν ισχύει: ακόμη και αν κάποιο μεταγενέστερο draft ταυτιζόταν
+τυχαία, απορρίπτεται.
+
+Έστω αποδεκτό πρόθεμα \(A\,B\,C\) και πρόταση \(D\,E\,F\). Τρία αυτοπαλινδρομικά
+βήματα του στόχου θα διάβαζαν τα βάρη του τρεις φορές. Στην επαλήθευση ο στόχος
+επεξεργάζεται την \(A\,B\,C\,D\,E\,F\) ως μία ακολουθία: πρώτα το στρώμα~1 σε
+όλες τις θέσεις, κατόπιν το στρώμα~2, και ούτω καθεξής. Τα βάρη κάθε στρώματος
+φορτώνονται από τη μνήμη μία φορά. Τα logits στις θέσεις \(C\), \(D\) και \(E\)
+είναι οι κατανομές για τα επόμενα tokens \(D\), \(E\) και \(F\) αντίστοιχα.
+Αν τα δείγματα του στόχου είναι \(D\), \(H\), \(F\), γίνεται αποδεκτό μόνο το
+\(D\). Το \(H\) εκπέμπεται ως διόρθωση. Τα προτεινόμενα \(E\) και \(F\)
+απορρίπτονται, συμπεριλαμβανομένου του \(F\), παρότι ταυτίστηκε, επειδή
+βαθμολογήθηκε υπό το ψευδές ιστορικό \(D\,E\) αντί για \(D\,H\).
+
+Η αριθμητική εξακολουθεί να εκτελείται σε κάθε θέση. Η ωφέλεια, όταν υπάρχει,
+είναι ότι η σειριακή εξάρτηση μένει στον φθηνό drafter, ενώ το ακριβό μοντέλο
+αποσβένει μία μεταφορά βαρών σε περισσότερες θέσεις. Οι Chen et~al.\ το
+διατυπώνουν ως καθυστέρηση παράλληλης βαθμολόγησης συγκρίσιμη με ένα βήμα του
+μεγάλου μοντέλου~\cite{chen2023accelerating}. Με όρους υλικού, η μέθοδος
+μετατρέπει το σειριακό decode που δεσμεύεται από τη μνήμη σε παράλληλη
+επαλήθευση που δεσμεύεται περισσότερο από την αριθμητική~\cite{vllm-speculators-docs}.
+
+Ο κβαντισμός κινείται σε ανεξάρτητο άξονα: μειώνει τα bytes ανά βάρος και άρα
+τον χρόνο μεταφοράς, με κόστος ακρίβειας που εξαρτάται από το σχήμα και το
+μοντέλο~\cite{frantar2023gptq,lin2024awq}. Η κερδοσκοπία δεν μειώνει τα bytes
+των βαρών. Αυξάνει πόσα εκπεμπόμενα tokens πληρώνει κάθε ανάγνωσή τους, εφόσον
+ο drafter είναι αρκετά φθηνός και αρκετά εύστοχος. Το κόστος ενός batched
+περάσματος δεν είναι \(k\) φορές το κόστος ενός token, αλλιώς δεν θα υπήρχε
+όφελος.
+
+Αυτός είναι ο λόγος που η μέθοδος αξίζει σε διαδραστική παραγωγή, ένα αίτημα
+τη φορά, όταν η GPU έχει πλεονάζουσα αριθμητική. Είναι και ο λόγος που σε
+υψηλή ταυτοχρονία το ίδιο στοίχημα μπορεί να μειώσει τη ρυθμαπόδοση. Αν η GPU
+είναι ήδη κορεσμένη από πολλές ανεξάρτητες ακολουθίες, η πλεονάζουσα
+αριθμητική έχει φύγει και τα απορριφθέντα υποψήφια tokens ανταγωνίζονται τα
+πραγματικά για τους ίδιους πόρους~\cite{vllm-speculative-docs}. Η παρούσα
+εργασία μετρά τη μονο-ακολουθιακή περίπτωση. Το Σχήμα~\ref{fig:ar-vs-spec}
+αντιπαραθέτει τις δύο ροές: σειριακό decode έναντι πρότασης και batched
+επαλήθευσης.
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{\input{figures/ar-vs-spec}}
+  \caption{Αυτοπαλινδρομικό decode και κερδοσκοπική επαλήθευση. Επάνω: κάθε
+    νέο token απαιτεί χωριστό πέρασμα του στόχου. Κάτω: ο drafter προτείνει ένα
+    μπλοκ· ο στόχος επαληθεύει σε ένα batched πέρασμα και σταματά στην πρώτη
+  απόρριψη. Τα αποδεκτά tokens είναι δείγματα του στόχου, όχι προσέγγιση.}
+  \label{fig:ar-vs-spec}
+\end{figure}
+
+\section{Canonical κερδοσκοπική δειγματοληψία}
+\label{sec:canonical}
+
+Ο αλγόριθμος των Leviathan, Kalman και Matias, και η παράλληλη εργασία των
+Chen et~al., έχουν την ίδια δομή~\cite{leviathan2023fast,chen2023accelerating}.
+
+\begin{enumerate}[leftmargin=*]
+  \item Ο drafter παράγει πρόταση μήκους \(k\) δειγματοληπτώντας από την \(q\).
+  \item Το μοντέλο-στόχος υπολογίζει τις \(p\) στις αντίστοιχες θέσεις με ένα
+    batched πέρασμα.
+  \item Η αποδοχή προχωρά από αριστερά προς τα δεξιά και σταματά στην πρώτη
+    απόρριψη.
+  \item Αν απορριφθεί το \(x\sim q\), το επόμενο token δειγματοληπτείται από την
+    υπολειμματική κατανομή
+    \(\tilde p(x)\propto\max\bigl(0,p(x)-q(x)\bigr)\).
+  \item Αν γίνουν αποδεκτά και τα \(k\) tokens, ένα επιπλέον \emph{bonus} token
+    δειγματοληπτείται από την \(p\) στην επόμενη θέση, χωρίς δεύτερη κλήση του
+    στόχου.
+\end{enumerate}
+
+Μετά την πρώτη απόρριψη τα δεξιότερα logits ανήκουν σε ιστορικό που δεν
+ισχύει. Απορρίπτονται, και οι αντίστοιχες θέσεις KV αναδιπλώνονται.
+
+Ο κανόνας αποδοχής είναι
+\begin{equation}
+  \alpha(x)=\min\bigl(1,p(x)/q(x)\bigr),
+  \label{eq:accept}
+\end{equation}
+με τη σύμβαση ότι αν \(q(x)=0\) το token απορρίπτεται (ή δεν μπορεί να έχει
+προταθεί).
+
+\begin{theorem}[Διατήρηση της κατανομής στόχου]
+  \label{thm:lossless}
+  Κάτω από τον κανόνα~\eqref{eq:accept} και την υπολειμματική δειγματοληψία,
+  το εκπεμπόμενο token σε μία θέση ακολουθεί ακριβώς την \(p(\cdot\mid h)\).
+\end{theorem}
+
+\begin{proof}
+  Έστω σταθερό \(x^{\ast}\). Η μάζα που προέρχεται από αποδοχή του draft είναι
+  \[
+    q(x^{\ast})\,\min\bigl(1,p(x^{\ast})/q(x^{\ast})\bigr)
+    =\min\bigl(p(x^{\ast}),q(x^{\ast})\bigr).
+  \]
+  Η πιθανότητα απόρριψης ισούται με \(1-\sum_{x}\min(p(x),q(x))\). Η μάζα που
+  προσθέτει η υπολειμματική κατανομή στο \(x^{\ast}\) είναι
+  \(\max\bigl(0,p(x^{\ast})-q(x^{\ast})\bigr)\). Το άθροισμα των δύο όρων είναι
+  \(p(x^{\ast})\).
+\end{proof}
+
+Η εγγύηση αφορά την κατανομή, όχι δύο συγκεκριμένα κείμενα. Δύο ανεξάρτητα
+δείγματα από την ίδια \(p\) μπορεί να έχουν διαφορετικό perplexity. Επομένως
+η σύγκριση ενός SD output με ένα AR output δεν αποδεικνύει ορθότητα. Για τον
+canonical αλγόριθμο, σημαντική απόκλιση των κατανομών perplexity είναι ένδειξη
+σφάλματος υλοποίησης.
+
+Στην πράξη η ιδιότητα διατήρησης της κατανομής χωρίζεται σε τρία επίπεδα, με τον τρόπο που την
+ελέγχουν και οι μηχανές παραγωγής~\cite{vllm-speculative-docs}. Θεωρητικά, ο
+κανόνας~\eqref{eq:accept} διατηρεί την \(p\) έως τα όρια της αριθμητικής
+κινητής υποδιαστολής. Αλγοριθμικά, ο ελέγξιμος αντίστοιχος ισχυρισμός για
+greedy πολιτική είναι η ισότητα ακολουθίας: η κερδοσκοπική διαδρομή πρέπει να
+εκπέμπει τα ίδια \texttt{token\_id} με την αυτοπαλινδρομική βάση. Αριθμητικά,
+διαφορές batch, μη ντετερμινιστικοί πυρήνες ή ασυνεπής κατάσταση sampler/KV
+μπορούν να σπάσουν την ισότητα χωρίς να αναιρούν το θεώρημα. Το
+\texttt{spectre} δεν υλοποιεί τον στοχαστικό κανόνα~\eqref{eq:accept}. Υλοποιεί
+συμφωνία sampler, άρα ο δικός του έλεγχος ορθότητας είναι ακριβώς η greedy
+ισότητα ακολουθίας (RQ1).
+
+\section{Αποδοχή, απόσταση ολικής μεταβολής και κόστος}
+
+Η αναμενόμενη πιθανότητα αποδοχής ενός token είναι
+\begin{equation}
+  \mathbb{E}[\alpha]
+  =\sum_{x}\min\bigl(p(x),q(x)\bigr)
+  =1-\mathrm{TV}(p,q),
+  \label{eq:tv}
+\end{equation}
+όπου \(\mathrm{TV}\) είναι η απόσταση ολικής μεταβολής~\cite{leviathan2023fast}.
+Η~\eqref{eq:tv} φράσσει την ποιότητα του drafter, όχι απευθείας την επιτάχυνση
+στον χρόνο εκτέλεσης. Χρειάζεται μοντέλο κόστους.
+
+Έστω \(t_{\mathrm{draft}}(k)\) ο χρόνος παραγωγής \(k\) προτάσεων και
+\(t_{\mathrm{verify}}(k)\) ο χρόνος του batched περάσματος του στόχου. Αν
+\(\tau\) είναι ο αναμενόμενος αριθμός εκπεμπόμενων tokens ανά γύρο
+(συμπεριλαμβανομένου του bonus όταν ορίζεται έτσι), επιτάχυνση προκύπτει όταν
+\[
+  \frac{\tau}{t_{\mathrm{draft}}(k)+t_{\mathrm{verify}}(k)}
+  \;\;>\;\;
+  \frac{1}{t_{\mathrm{AR}}},
+\]
+όπου \(t_{\mathrm{AR}}\) είναι ο χρόνος ενός αυτοπαλινδρομικού βήματος του
+στόχου. Υψηλή αποδοχή με ακριβό drafter μπορεί να χάσει από χαμηλότερη αποδοχή
+με φθηνότερο drafter. Ο γεωμετρικός τύπος για την αποδοτικότητα μπλοκ υποθέτει
+ανεξαρτησία μεταξύ θέσεων, η οποία στην πράξη συχνά δεν ισχύει.
+
+\section{Κβαντισμός και επιλογή ζεύγους}
+
+Στη μορφή GGUF τα βάρη αποθηκεύονται σε μπλοκ με κλίμακες (K-quants) ή με
+σχήματα που κατανέμουν bits κατά σπουδαιότητα (I-quants)~\cite{llamacpp}. Το
+\texttt{Q8\_0} προσεγγίζει συνήθως την ακρίβεια FP16 με τα μισά bytes. Το
+\texttt{Q4\_K\_M} είναι πρακτικό σημείο λειτουργίας σε σταθμούς εργασίας, όχι
+απόδειξη καθολικής βελτιστότητας.
+
+Για Mixture-of-Experts η διάκριση total/active παραμέτρων είναι απαραίτητη.
+Η μνήμη πληρώνει το σύνολο. Ο χρόνος decode πληρώνει κυρίως τις ενεργές
+παραμέτρους ανά token. Ο λόγος μεγέθους draft/target πρέπει να συγκρίνει
+ενεργό κόστος, όχι μόνο την ετικέτα «30B».
+
+Ένα αξιοποιήσιμο ζεύγος χρειάζεται κοινό tokenizer και λεξιλόγιο, κατά
+προτίμηση ίδια οικογένεια, μετρημένο \(t_{\mathrm{draft}}/t_{\mathrm{target}}
+\ll 1\) και αρκετή συμφωνία ώστε η~\eqref{eq:tv} να μην καταρρεύσει. Η
+εργασία εφαρμόζει αυτά τα κριτήρια στο Κεφάλαιο~\ref{ch:setup}. Δεν τα
+αντικαθιστά με σάρωση όλων των διαθέσιμων GGUF.
+
+\section{N-gram lookup}
+
+Ένα κλασικό n-gram γλωσσικό μοντέλο εκτιμά \(P(w_n\mid w_{n-k+1:n-1})\) από
+μετρήσεις σε σώμα κειμένου, υπό υπόθεση Markov~\cite{jurafsky2025slp}. Ο
+drafter του \texttt{spectre} δεν εκτιμά τέτοιες πιθανότητες. Αναζητά στο ήδη
+αποδεκτό ιστορικό (prompt και παραχθέντα tokens) την πιο πρόσφατη εμφάνιση
+ενός μοτίβου μήκους \(N\) και αντιγράφει έως \(M\) επόμενα tokens.
+
+Αν η πρόταση είναι ντετερμινιστική, η \(q\) είναι κατανομή Dirac στο
+προβλεφθέν token \(x_{\mathrm{pred}}\). Τότε, στον canonical κανόνα,
+\(\mathbb{E}[\alpha]=p(x_{\mathrm{pred}})\). Στην greedy υλοποίηση του
+Κεφαλαίου~\ref{ch:spectre} το κριτήριο είναι δυαδικό: ταύτιση με το
+\(\arg\max\) του στόχου. Οι δύο κανόνες συμπίπτουν μόνο όταν και οι δύο πλευρές
+είναι greedy στο ίδιο token.
+
+\chapter{Σχετικές εργασίες}
+\label{ch:related}
+
+Η βιβλιογραφία της κερδοσκοπικής αποκωδικοποίησης είναι πυκνή. Η ενότητα
+οργανώνεται ανά μηχανισμό και εγγύηση, όχι ως ακολουθία περιλήψεων.
+
+\section{Lossless draft--verify}
+
+Οι Leviathan et~al.\ έδειξαν ότι η κερδοσκοπία μπορεί να επιταχύνει υπάρχοντα
+αυτοπαλινδρομικά μοντέλα χωρίς επανεκπαίδευση και χωρίς μεταβολή της
+κατανομής στόχου, και έδωσαν τη σύνδεση αποδοχής--TV~\cite{leviathan2023fast}.
+Οι Chen et~al.\ διατύπωσαν τον ίδιο μηχανισμό ως speculative sampling, με
+έμφαση στο ότι η παράλληλη βαθμολόγηση σύντομης συνέχειας έχει καθυστέρηση
+συγκρίσιμη με ένα βήμα του μεγάλου μοντέλου~\cite{chen2023accelerating}.
+Η ίδια διάκριση, φθηνή πρόταση και ένα πέρασμα επαλήθευσης του στόχου, είναι
+και ο τρόπος με τον οποίο οι μηχανές παραγωγής περιγράφουν τον μηχανισμό:
+ο στόχος δεν χρειάζεται χωριστό αυτοπαλινδρομικό βήμα πριν συγκρίνει την
+πρόταση~\cite{vllm-speculative-docs,vllm-speculators-docs}. Οι Spector και
+R\'e εισήγαγαν σταδιακή κερδοσκοπία: περισσότερα του ενός επίπεδα
+πρότασης πριν την τελική επαλήθευση~\cite{spector2023staged}. Η υβριδική
+διαδρομή του \texttt{spectre} μοιάζει με staged αποκωδικοποίηση μόνο ως
+ιδέα φθηνότερου πρώτου επιπέδου. Δεν εκπαιδεύει ενδιάμεσο μοντέλο.
+
+Από τις εργασίες αυτές κρατούνται τρεις αρχές: (α)~ο στόχος παραμένει η πηγή
+αλήθειας, (β)~η επαλήθευση είναι batched και γραμμική από αριστερά, (γ)~χωρίς
+μοντέλο κόστους η αποδοχή δεν είναι επιτάχυνση.
+
+\section{Οικογένειες drafters}
+
+\paragraph{Ανεξάρτητο μικρό μοντέλο.}
+Το συνηθέστερο σχήμα χρησιμοποιεί μικρότερο μοντέλο της ίδιας οικογένειας.
+Απαιτεί συμβατό tokenizer. Το κόστος drafting είναι πραγματικό πέρασμα του
+δικτύου.
+Ένα κβαντισμένο αντίγραφο του στόχου είναι προσέγγιση του ίδιου μοντέλου, όχι
+«μικρότερο μοντέλο» με την έννοια του πλήθους παραμέτρων.
+
+\paragraph{Prompt lookup και n-gram.}
+Η prompt lookup decoding αντιγράφει συνέχεια από το prompt όταν εμφανίζεται
+ξανά το ίδιο επίθημα~\cite{saxena2023prompt}. Το \texttt{llama.cpp}
+υλοποιεί διάφορες n-gram παραλλαγές χωρίς δεύτερο
+μοντέλο~\cite{llamacpp-speculative}. Κερδίζουν σε επαναλαμβανόμενο κώδικα ή
+δομημένη έξοδο. Αποτυγχάνουν σε πεζό κείμενο χωρίς επανάληψη. Η παρούσα
+εργασία χρησιμοποιεί token-level lookup στο συνδυασμένο ιστορικό prompt και
+εξόδου.
+
+Οι μηχανές συμπερασμού οργανώνουν τις ίδιες οικογένειες με πρακτικό κριτήριο
+κόστους. Στο vLLM, μέθοδοι με ξεχωριστό ή εκπαιδευμένο drafter (πρόχειρο
+μοντέλο, EAGLE, MTP) στοχεύουν στη μεγαλύτερη μείωση καθυστέρησης, ενώ n-gram
+και suffix decoding δίνουν μικρότερο όφελος χωρίς επιπλέον μοντέλο και χωρίς
+να φορτώνουν τον εξυπηρετητή σε ώρα αιχμής~\cite{vllm-speculative-docs}. Το
+\texttt{llama.cpp} χωρίζει ανάλογα draft model, n-gram και νεότερους learned
+drafters~\cite{llamacpp-speculative}. Η εργασία μένει στις δύο φθηνές
+οικογένειες που δεν απαιτούν εκπαίδευση: ανεξάρτητο μικρό μοντέλο και n-gram
+lookup.
+Δεν αξιολογεί EAGLE, MTP ή MLP speculators.
+
+\paragraph{Learned heads.}
+Η Medusa προσθέτει πολλαπλές κεφαλές επόμενου token πάνω στο ίδιο βασικό δίκτυο
+και χαλαρώνει συχνά την αποδοχή~\cite{cai2024medusa}. Η EAGLE προβλέπει σε
+επίπεδο χαρακτηριστικών του στόχου και απαιτεί ξεχωριστό εκπαιδευμένο πρόσθετο
+ανά μοντέλο-στόχο~\cite{li2024eagle}. Και οι δύο οικογένειες βγαίνουν
+από το εύρος: χρειάζονται εκπαίδευση ή ειδικά σημεία ελέγχου που η εργασία
+δεν αξιολογεί.
+
+\paragraph{Δενδρικές προτάσεις.}
+Το SpecInfer επαληθεύει δέντρο υποψηφίων με προσοχή δέντρου (tree attention)
+αντί για μία γραμμική ακολουθία~\cite{miao2024specinfer}. Το TALON προσαρμόζει το σχήμα
+του δέντρου στον διαθέσιμο προϋπολογισμό κόμβων και αναφέρει έως
+\(5.16\times\) έναντι αυτοπαλινδρομικής βάσης στο δικό του
+benchmark~\cite{liu2026talon}. Ο αριθμός δεν μεταφέρεται στο παρόν υλικό. Το
+\texttt{spectre} επαληθεύει μία ακολουθία.
+
+\section{Προσαρμοστικό μήκος, απώλειες και άλλες επεκτάσεις}
+
+Σταθερό \(n_{\max}\) είναι συμβιβασμός. Το AdaEDL σταματά το drafting με
+κριτήριο εντροπίας, χωρίς εκπαίδευση~\cite{agrawal2024adaedl}. Το SpecDec++
+εκπαιδεύει κεφαλή πρόβλεψης αποδοχής και σταματά όταν η προβλεπόμενη
+απόρριψη υπερβεί κατώφλι~\cite{huang2024specdecpp}. Τέτοιες πολιτικές είναι
+φυσική συνέχεια των καμπυλών αποδοχής ανά θέση, όχι μέρος της τρέχουσας
+υλοποίησης.
+
+Άλλες εργασίες εγκαταλείπουν την αμεροληψία. Το reward-guided speculative
+decoding αντικαθιστά τον κανόνα αποδοχής με κατώφλι ανταμοιβής και αξιολογεί
+ποιότητα σε έργα συλλογιστικής, όχι με
+perplexity~\cite{liao2025rsd}. Παράλληλη επικάλυψη drafting και επαλήθευσης,
+καθώς και διαμοιρασμός drafter και στόχου σε ετερογενές SoC, είναι
+ανεξάρτητες βελτιστοποιήσεις. Ανήκουν στη μελλοντική εργασία.
+
+\section{Τοποθέτηση}
+
+Το \texttt{spectre} ανήκει στην κατηγορία «ανεξάρτητο μικρό μοντέλο ή n-gram,
+γραμμική πρόταση, διατήρηση εξόδου ως σχεδιαστικός στόχος, GGUF /
+\texttt{llama.cpp}». Η συνεισφορά είναι η πειραματική μηχανή, η υβριδική
+διαδρομή ως εκτελέσιμη διαμόρφωση και η ταυτόχρονη καταγραφή χρόνου και
+ενέργειας decode. Δεν είναι νέος αλγόριθμος αποδοχής και δεν είναι επανάληψη
+των αριθμών Medusa ή EAGLE. Το Κεφάλαιο~\ref{ch:spectre} περιγράφει τι ακριβώς
+εκτελείται.
+
+\chapter{Σχεδίαση και υλοποίηση του \texttt{spectre}}
+\label{ch:spectre}
+
+Το \texttt{spectre} είναι μηχανή συμπερασμού ειδικού σκοπού. Στόχος της είναι
+η ελεγχόμενη σύγκριση στρατηγικών κερδοσκοπικής αποκωδικοποίησης πάνω στη
+\texttt{libllama}~\cite{llamacpp}, όχι η συγγραφή νέων πυρήνων CUDA ή νέου
+tokenizer. Η γλώσσα είναι C++, επειδή αυτό είναι το περιβάλλον της
+\texttt{llama.cpp} και επειδή η επαλήθευση απαιτεί προβλέψιμη διαχείριση της
+KV cache χωρίς ενδιάμεσο χρόνο διερμηνέα.
+
+Το όνομα δηλώνει τον κανόνα του επαληθευτή: \emph{sampler-agreement}. Ο
+target sampler επιλέγει token. Το draft token κρατιέται μόνον αν είναι το
+ίδιο. Η σημαία \texttt{--greedy} αλλάζει τον sampler, όχι τον επαληθευτή.
+Ο κανόνας \(\min(1,p/q)\) ανήκει στο Κεφάλαιο~\ref{ch:background}.
+
+\section{Στόχοι σχεδίασης}
+\label{sec:design-goals}
+
+Η αρχιτεκτονική οργανώθηκε γύρω από τρεις απαιτήσεις.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Ορθότητα.}
+    Με \texttt{--greedy}, κοινό prompt, κοινό μοντέλο-στόχο και ίδιο όριο
+    παραγωγής, η κερδοσκοπική διαδρομή πρέπει να εκπέμπει την ίδια ακολουθία
+    \texttt{token\_id} με την αυτοπαλινδρομική βάση. Ο έλεγχος είναι
+    token-by-token parity: τα αποδεκτά tokens πρέπει να είναι ακριβώς εκείνα
+    που θα επέλεγε ο στόχος, όχι μια προσέγγισή του. Δεν είναι perplexity και
+    δεν είναι σύγκριση ελεύθερου κειμένου.
+  \item \textbf{Μετρησιμότητα.}
+    Κάθε εκτέλεση γράφει ανά token και ανά γύρο τα πεδία που χρειάζονται για
+    αποδοχή, διόρθωση, bonus και χρόνους decode. Οι μετρήσεις διαβάζονται από
+    αυτά τα αρχεία.
+  \item \textbf{Αναπαραγωγιμότητα.}
+    Prompt, seed, διαδρομές μοντέλων, \(n_{\min}\) και \(n_{\max}\), καθώς και
+    η σημαία greedy, αποθηκεύονται στο \texttt{meta.json}. Η ακολουθία tokens
+    γράφεται στο \texttt{tokens.csv}.
+\end{enumerate}
+
+Οι στόχοι αυτοί δεν αποτελούν τυπική επαλήθευση με proof assistant. Είναι
+θεωρητική διάκριση του αλγορίθμου και εμπειρικός έλεγχος της συγκεκριμένης
+υλοποίησης. Κύρια απαίτηση ήταν η υποστήριξη περισσότερων του ενός drafters
+και της υβριδικής τους σύνθεσης, χωρίς να αλλάζει ο επαληθευτής.
+
+\section{Ροή εκτέλεσης}
+\label{sec:architecture}
+
+Η περιγραφή ακολουθεί μία εκτέλεση, από τη φόρτωση των μοντέλων έως την
+καταγραφή.
+
+\begin{enumerate}[leftmargin=*]
+  \item Ανάλυση ορισμάτων γραμμής εντολών και φόρτωση βαρών GGUF.
+  \item Tokenization του prompt και έλεγχος συμβατότητας λεξιλογίου όταν υπάρχει
+    πρόχειρο μοντέλο.
+  \item Prefill του προθέματος στο KV cache του στόχου. Το τελευταίο token του
+    prompt μένει εκκρεμές (\emph{pending}) και δεν έχει ακόμη αποκωδικοποιηθεί ως νέο βήμα
+    παραγωγής.
+  \item Επανάληψη γύρων μέχρι EOS ή όριο \texttt{n\_predict}: πρόταση draft, ένα
+    batched \texttt{llama\_decode} στον στόχο, επαλήθευση, καταγραφή, αναδίπλωση
+    των απορριφθέντων θέσεων KV.
+  \item Τελική εγγραφή \texttt{meta.json} και \texttt{tokens.csv}.
+\end{enumerate}
+
+Η διακλάδωση αυτοπαλινδρομικής και κερδοσκοπικής διαδρομής γίνεται αφού το
+πρόθεμα βρίσκεται ήδη στην κρυφή μνήμη. Οι δύο διαδρομές μοιράζονται το ίδιο
+μοντέλο-στόχο και τον ίδιο target sampler. Το πρόχειρο μοντέλο, όταν υπάρχει,
+έχει δικό του context και δικό του sampler.
+
+\section{Στρατηγικές drafting}
+\label{sec:strategies}
+
+Στα πειράματα συγκρίνονται τρεις διαμορφώσεις. Όσα μένουν σταθερά μεταξύ τους
+είναι το prompt, το μοντέλο-στόχο, η πολιτική δειγματοληψίας, το seed, το όριο
+tokens και η τοποθέτηση συσκευής.
+
+\subsection{Αυτοπαλινδρομική βάση}
+
+Χωρίς πρόχειρο μοντέλο και χωρίς n-gram, κάθε βήμα είναι ένα δείγμα του
+στόχου. Η βάση είναι το σημείο αναφοράς κάθε ισχυρισμού επιτάχυνσης. Ο
+χρονομετρητής decode ξεκινά μετά το prefill και σταματά στο EOS ή στο
+\texttt{n\_predict}.
+Το EOS μετράται όπως και στις κερδοσκοπικές διαδρομές.
+
+\subsection{Πρόχειρο μοντέλο}
+
+Ένα μικρότερο μοντέλο της ίδιας οικογένειας παράγει έως \(n_{\max}\)
+προτάσεις, με δικό του KV cache. Το κόστος drafting περιλαμβάνει τη
+συγχρονισμένη προώθηση του αποδεκτού προθέματος στο draft context και τα
+ίδια τα βήματα πρότασης. Αν η πρόταση είναι μικρότερη από \(n_{\min}\),
+απορρίπτεται ολόκληρη και ο γύρος γίνεται αυτοπαλινδρομικός.
+
+\subsection{Υβριδική διαδρομή}
+
+Με \texttt{--ngram}, ο γύρος δοκιμάζει πρώτα lookup στο ήδη αποδεκτό ιστορικό.
+Αν η πρόταση είναι κενή ή ακατάλληλη, ακολουθεί το πρόχειρο μοντέλο εφόσον
+έχει δοθεί. Το n-gram lookup δεν είναι χωριστή διαμόρφωση στην καμπάνια του
+Κεφαλαίου~\ref{ch:results}. Είναι εσωτερική βαθμίδα της υβριδικής διαδρομής.
+
+Η αναζήτηση σχηματίζει μοτίβο μήκους \(N\) από τα τελευταία αποδεκτά tokens
+μαζί με το εκκρεμές token, βρίσκει προηγούμενη εμφάνιση και αντιγράφει έως
+\(M\) επόμενα tokens, με περικοπή στο \(n_{\max}\). Δεν υπάρχει εκπαίδευση
+και δεν υπάρχει εκτίμηση πιθανότητας από σώμα κειμένου.
+
+Η αναλογία με ιεραρχία κρυφής μνήμης — n-gram ως πρώτη βαθμίδα, πρόχειρο
+μοντέλο ως δεύτερη, στόχος ως κύρια μνήμη — είναι μεταφορά κόστους. Σταματά σε
+ένα σημείο: ο στόχος τρέχει σε \emph{κάθε} κερδοσκοπικό γύρο για επαλήθευση.
+Δεν υπάρχει αστοχία κρυφής μνήμης που να τον παρακάμπτει. Μια επιτυχία n-gram
+δεν είναι πρόβλεψη διακλάδωσης υλικού. Είναι ντετερμινιστική αντιγραφή tokens,
+η οποία κατόπιν υπόκειται στον ίδιο κανόνα συμφωνίας sampler.
+
+\section{Επαλήθευση με συμφωνία sampler}
+\label{sec:verify}
+
+Έστω αποδεκτό ιστορικό \(A\,B\,C\,D\,E\) και πρόταση \(F\,G\,H\). Αυτό είναι
+το ίδιο σχήμα με το παράδειγμα \(A\,B\,C\) και πρόταση \(D\,E\,F\) της
+ενότητας~\ref{sec:batched-verify}: ο στόχος δεν παράγει πρώτα τα \(F\,G\,H\)
+σειριακά για να έχει με τι να συγκρίνει. Βαθμολογεί την πρόταση ως σύντομο
+prompt, ένα \texttt{llama\_decode}. Το πέρασμα περιέχει το εκκρεμές token και
+κατόπιν τα \(F,G,H\). Τα logits στη θέση \(0\) προβλέπουν το token μετά το
+εκκρεμές· στη θέση \(1\) μετά το \(F\), εφόσον το \(F\) γίνει αποδεκτό, και
+ούτω καθεξής.
+
+Ο βρόχος επαλήθευσης είναι γραμμικός. Κρατά το μακρύτερο πρόθεμα που συμφωνεί
+με το δείγμα του target sampler και σταματά στην πρώτη ασυμφωνία.
+
+\begin{enumerate}[leftmargin=*]
+  \item Για κάθε δείκτη \(i\) της πρότασης, δείγμα
+    \(x \leftarrow \mathrm{sample}(\textit{target}, i)\).
+  \item Αν \(x \neq \textit{proposes}[i]\), το αποτέλεσμα είναι
+    \texttt{Correction}: το \texttt{target\_token} είναι το \(x\) και το
+    \texttt{rejected\_proposal\_index} είναι το \(i\). Τα ήδη συμφωνημένα
+    draft tokens είναι το αποδεκτό πρόθεμα.
+  \item Αν όλα τα στοιχεία της πρότασης συμφωνούν, δείγμα στη θέση
+    \(n = |\textit{proposes}|\) δίνει το bonus token από το ίδιο πέρασμα του
+    δικτύου.
+  \item Κενή πρόταση δεν μετρά ως bonus. Το είδος είναι
+    \texttt{Autoregressive} και το μοναδικό νέο token είναι το δείγμα του
+    στόχου.
+\end{enumerate}
+
+Μετά την πρώτη ασυμφωνία, τα δεξιότερα logits δεν χρησιμοποιούνται.
+
+Κάθε εκπεμπόμενο token ανήκει σε ακριβώς μία κατηγορία.
+
+\begin{table}[ht]
+  \centering
+  \caption{Κατηγορίες εκπεμπόμενων tokens στο \texttt{tokens.csv}.}
+  \label{tab:kinds}
+  \small
+  \begin{tabular}{@{}lp{9.4cm}@{}}
+    \toprule
+    Είδος & Σημασία \\
+    \midrule
+    \texttt{draft}      & αποδεκτό στοιχείο της πρότασης· συμφωνία sampler \\
+    \texttt{correction} & δείγμα στόχου στη θέση απόρριψης· το
+    απορριφθέν draft γράφεται χωριστά \\
+    \texttt{bonus}      & δείγμα μετά από πλήρη συμφωνία· δεν ανήκει
+    στην πρόταση \\
+    \texttt{ar}         & δείγμα στόχου χωρίς πρόταση· κενό draft, όχι bonus \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Στο παράδειγμα \(F\,G\,H\), αν \(F\) και \(G\) συμφωνούν και το \(H\)
+απορρίπτεται υπέρ κάποιου \(X\), εκπέμπονται \(F\), \(G\) και κατόπιν το
+\(X\). Το \(H\) δεν γράφεται ως εκπεμπόμενο token. Η πιθανότητα draft στη
+γραμμή διόρθωσης είναι \(q(H)\), όχι \(q(X)\). Αν, στο ίδιο πέρασμα, κάποιο
+token δεξιότερα του \(H\) ταυτιζόταν τυχαία με το δείγμα του στόχου, πάλι δεν
+εκπέμπεται: βαθμολογήθηκε υπό ιστορικό που η απόρριψη του \(H\) ακύρωσε. Το
+Σχήμα~\ref{fig:verify-round} δείχνει τον ίδιο γύρο ως πίνακα θέσεων.
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{\input{figures/verify-round}}
+  \caption{Ένας γύρος συμφωνίας sampler στο \texttt{spectre}. Η πρόταση
+    \(F\,G\,H\) επαληθεύεται από αριστερά προς τα δεξιά. Στη θέση του \(H\) ο
+    στόχος δειγματοληπτεί \(X\neq H\): εκπέμπονται \(F\), \(G\) και η διόρθωση
+  \(X\). Το bonus δείγμα υπάρχει μόνον όταν συμφωνεί ολόκληρη η πρόταση.}
+  \label{fig:verify-round}
+\end{figure}
+
+Μετά την καταγραφή, οι θέσεις KV του στόχου πέρα από το αποδεκτό μήκος
+αφαιρούνται με \texttt{llama\_memory\_seq\_rm}. Το επόμενο εκκρεμές token είναι
+το \texttt{target\_token} του γύρου, εκτός αν ο γύρος σταμάτησε σε EOS ή στο
+όριο παραγωγής μέσα στα αποδεκτά draft. Ο greedy parity έλεγχος είναι ο
+εμπειρικός έλεγχος αυτού του μηχανισμού. Δεν αποδεικνύει διατήρηση
+στοχαστικής κατανομής.
+
+\section{Καταγραφή}
+\label{sec:repro}
+
+Κάθε εκτέλεση γράφει έναν κατάλογο
+\texttt{results/spectre/\textless run-id\textgreater/} με δύο αρχεία. Το
+\texttt{meta.json} αποθηκεύει διαδρομές μοντέλων, \(n_{\min}/n_{\max}\),
+sampler, seed, prompt, χρονικά σύνολα, ενέργεια decode και σύνοψη ανά γύρο.
+Το \texttt{tokens.csv} έχει μία γραμμή ανά εκπεμπόμενο token. Η εγγραφή είναι
+σταδιακή ώστε μια διακοπείσα εκτέλεση να μην χάνει τις γραμμές που πρόλαβαν
+να γραφτούν· το πεδίο \texttt{complete} διακρίνει τις ολοκληρωμένες
+εκτελέσεις.
+
+Η ανάλυση διαβάζει μόνο αυτούς τους καταλόγους. Δεν εξάγει αριθμούς από
+αποσπάσματα τερματικού. Το Παράρτημα~\ref{app:schema} συνοψίζει τα πεδία.
+
+\section{Σχέση με το \texttt{llama.cpp}}
+
+Παράλληλα με το \texttt{spectre} εξετάστηκαν αλλαγές στο ίδιο το
+\texttt{llama.cpp}. Μια συγχωνευμένη συνεισφορά δεν παρουσιάζεται ως
+ισοδύναμη με δύο προτάσεις που δεν ενσωματώθηκαν. Η πειραματική καμπάνια
+τρέχει στο δυαδικό \texttt{spectre}, όχι σε κλειστό pull request. Η ενσωμάτωση σε έργο με
+πολλούς συντελεστές έδειξε πρακτικά όρια που απαντούν την RQ4: συμβατότητα
+λεξιλογίου, πειθαρχία KV μετά από rollback, και η ανάγκη ο recorder να μην
+συγχέει διόρθωση με bonus.
+
+\chapter{Πειραματική διάταξη}
+\label{ch:setup}
+
+Το πρωτόκολλο δηλώνεται πριν από την ανάγνωση των αποτελεσμάτων. Η ανεξάρτητη
+μεταβλητή κάθε σύγκρισης είναι η στρατηγική drafting και το \(n_{\max}\).
+Σταθερά παραμένουν το μοντέλο-στόχος, το πρόχειρο μοντέλο όταν χρησιμοποιείται,
+το prompt, ο προϋπολογισμός 256 tokens, η greedy πολιτική και η ίδια GPU.
+
+\section{Υλικό και λογισμικό}
+\label{sec:hardware}
+
+Οι μετρήσεις έγιναν σε απομακρυσμένο σταθμό εργασίας με μία GPU NVIDIA RTX
+A6000, όπως την αναφέρει το NVML στο \texttt{meta.json}. Η κάρτα είναι
+σταθμού εργασίας, όχι κάρτα καταναλωτή. Το λογισμικό μεταγλώττισης στο ίδιο
+περιβάλλον ήταν CUDA 12.0 και g++ 11.4 σε Ubuntu 22.04. Όλα τα στρώματα
+τοποθετούνται στη GPU (\texttt{n-gpu-layers=-1}). Το εύρος context ήταν 4096
+tokens.
+
+Η ενέργεια decode μετράται από τον μετρητή συνολικής κατανάλωσης NVML όταν
+είναι διαθέσιμος. Το παράθυρο μέτρησης ξεκινά μετά το prefill και κλείνει
+στο τέλος της παραγωγής, με \texttt{llama\_synchronize} στα άκρα ώστε ο
+χρόνος GPU να μην ξεφεύγει από το μετρούμενο χρονικό παράθυρο.
+
+\section{Μοντέλα}
+
+Το κύριο ζεύγος είναι Qwen2.5-Instruct~\cite{qwen2p5}: στόχος 14B σε
+\texttt{Q4\_K\_M} και πρόχειρο 1.5B σε \texttt{Q8\_0}. Τα δύο μοντέλα
+μοιράζονται οικογένεια και tokenizer. Ο στόχος χωρά στη μνήμη της A6000 μαζί
+με το πρόχειρο. Ο λόγος ενεργών παραμέτρων είναι περίπου \(1.5/14\), αρκετά
+μικρότερος από \(1\), αλλά το πρόχειρο τρέχει σε υψηλότερη ακρίβεια από τον
+στόχο, άρα το πραγματικό \(t_{\mathrm{draft}}/t_{\mathrm{target}}\) πρέπει να
+κριθεί από μέτρηση και όχι από τις ετικέτες μεγέθους.
+
+Δεν παρουσιάζεται δεύτερο ζεύγος σε αυτή την καμπάνια. Μοντέλα της τάξης
+1.5B/3B χρησιμοποιήθηκαν μόνο ως δοκιμές κατά την ανάπτυξη.
+
+\section{Φόρτος εργασίας}
+
+Όλες οι εκτελέσεις του Πίνακα~\ref{tab:campaign} χρησιμοποιούν το ίδιο
+prompt παραγωγής Python (συνάρτηση Fibonacci με memoization και σύντομη
+εξήγηση) και greedy δειγματοληψία. Ο φόρτος είναι κώδικας, άρα ευνοϊκός για
+επαναλήψεις στο ιστορικό, και είναι \emph{ένα} prompt. Δεν επαρκεί για
+ισχυρισμούς σχετικά με πεζό κείμενο ή δομημένο JSON. Η επιλογή έγινε ως απλός
+επαναλήψιμος φόρτος που εκθέτει επανάληψη προτύπων, όχι ως αντιπροσωπευτικό
+σώμα.
+
+\section{Παράγοντες}
+
+Στρατηγικές: AR, model-only, hybrid. Τιμές \(n_{\max}\in\{2,4,8\}\) στις
+κερδοσκοπικές διαδρομές. Στην υβριδική διαδρομή το μήκος lookup ήταν
+\(N=2\). Δεν υπάρχει χωριστή n-gram-only εκτέλεση. Δεν υπάρχει επανάληψη με
+διαφορετικά seeds: η πολιτική είναι greedy, οπότε το seed δεν πρέπει να
+επηρεάζει την ακολουθία εφόσον ο greedy sampler εφαρμόζεται πράγματι.
+
+Κάθε ολοκληρωμένη εκτέλεση με \texttt{complete=true} και 256 εκπεμπόμενα
+tokens γίνεται δεκτή. Η εκτέλεση \texttt{warmup-ar} χρησιμοποιήθηκε μόνο για
+θερμικό ξεκίνημα και δεν περιλαμβάνεται στις συγκρίσεις.
+
+\section{Πρωτόκολλο ορθότητας}
+
+Για greedy εκτελέσεις με κοινό prompt, μοντέλο-στόχο, όριο και sampler
+απαιτείται
+\[
+  y_{\mathrm{spec}}=y_{\mathrm{AR}}
+\]
+σε επίπεδο \texttt{token\_id}. Αυτός είναι ο ίδιος λειτουργικός έλεγχος που
+χρησιμοποιούν μηχανές παραγωγής για αλγοριθμική διατήρηση εξόδου υπό greedy
+δειγματοληψία~\cite{vllm-speculative-docs}: όχι «μοιάζει το κείμενο», αλλά ίδια
+ακολουθία tokens. Μία διαφορά είναι σφάλμα υλοποίησης ή ασυνεπής κατάσταση
+sampler/KV, όχι αποτέλεσμα απόδοσης. Το perplexity δεν είναι το πρωτόκολλο.
+Ο κανονικός κανόνας \(p/q\) θα απαιτούσε ισότητα κατανομής, όχι ίσες
+ακολουθίες.
+
+\section{Μετρικές}
+\label{sec:metrics}
+
+\begin{description}[style=nextline,leftmargin=1.6em]
+  \item[Ρυθμαπόδοση decode.]
+    \(\mathrm{tok/s}=n_{\mathrm{out}}/t_{\mathrm{decode}}\), χωρίς φόρτωση
+    μοντέλου και χωρίς prefill.
+  \item[Καθυστέρηση.]
+    \(\mathrm{ms/token}=t_{\mathrm{decode}}/n_{\mathrm{out}}\).
+  \item[Αποδοχή.]
+    \(\textit{accept rate}=n_{\mathrm{accepted\_drafts}}/n_{\mathrm{drafted}}\).
+    Αριθμητής είναι μόνο τα πραγματικά αποδεκτά στοιχεία πρότασης. Τα bonus
+    tokens δεν μπαίνουν στον αριθμητή.
+  \item[Ενέργεια.]
+    Joule στο παράθυρο decode και J/token
+    \(=E_{\mathrm{decode}}/n_{\mathrm{out}}\).
+  \item[Speedup.]
+    λόγος tok/s προς την AR εκτέλεση της ίδιας καμπάνιας. Αναφέρεται μόνον όταν
+    η ακολουθία tokens είναι η ίδια, διαφορετικά δηλώνεται ως διαφορά
+    ρυθμαπόδοσης υπό διαφορετική έξοδο.
+\end{description}
+
+\section{Ενέργεια}
+\label{sec:energy}
+
+Η μέτρηση εφαρμόστηκε στην A6000 σε όλη τη διάρκεια του decode. Ο μετρητής
+NVML \texttt{total energy consumption} ολοκληρώνει ενέργεια στο υλικό. Δεν
+αφαιρέθηκε η κατανάλωση αδράνειας. Η μέση ισχύς είναι
+\(E_{\mathrm{decode}}/t_{\mathrm{decode}}\).
+Σύντομες εκτελέσεις έχουν μεγαλύτερη σχετική αβεβαιότητα. Εδώ κάθε μέτρηση
+αφορά 256 tokens, άρα το παράθυρο είναι μερικά δευτερόλεπτα.
+
+\chapter{Αποτελέσματα και αξιολόγηση}
+\label{ch:results}
+
+Τα δεδομένα προέρχονται από ολοκληρωμένες greedy εκτελέσεις στις 3
+Σεπτεμβρίου 2026, στον ίδιο σταθμό, με τα αρχεία που συνοδεύουν την εργασία.
+Κάθε ενότητα ξεκινά από ερώτημα και κλείνει με περιορισμένο συμπέρασμα. Δεν
+υπάρχει σάρωση κβαντισμού και δεν υπάρχει δεύτερο μοντέλο-στόχος.
+
+\section{Ισοδυναμία με την greedy βάση}
+\label{sec:parity}
+
+Η RQ1 ρωτά αν η κερδοσκοπική διαδρομή εκπέμπει τα ίδια \texttt{token\_id} με
+την AR βάση. Και οι επτά εκτελέσεις παρήγαγαν 256 tokens. Η ταύτιση
+token-by-token ίσχυσε μόνο για τη model-only διαμόρφωση με \(n_{\max}=8\).
+Οι υπόλοιπες κερδοσκοπικές εκτελέσεις απόκλιναν: η model-only με
+\(n_{\max}\in\{2,4\}\) στην θέση 184, η υβριδική με \(n_{\max}\in\{2,4\}\)
+στην θέση 76 και η υβριδική με \(n_{\max}=8\) στην θέση 161.
+
+Το εύρημα είναι αρνητικό ως προς την πληρότητα της RQ1. Σε greedy πολιτική, η
+ισότητα ακολουθίας είναι ο λειτουργικός ορισμός της διατήρησης εξόδου: η μέθοδος
+δεν προσεγγίζει τον στόχο, τον
+αναπαράγει~\cite{vllm-speculators-docs,vllm-speculative-docs}.
+Ένας επαληθευτής συμφωνίας sampler, αν ο greedy sampler και η KV κατάσταση
+είναι συνεπείς, δεν επιτρέπεται να αποκλίνει. Η απόκλιση δείχνει είτε ότι η
+σημαία greedy δεν εφαρμόζεται ομοιόμορφα σε όλες τις διαδρομές, είτε ότι
+κάποιοι γύροι αλλοιώνουν την κατάσταση (διπλή ενημέρωση sampler, λάθος
+αντιστοίχιση logits, ατελές rollback). Μέχρι να κλείσει αυτό το κενό, οι
+διαφορές tok/s στις αποκλίνουσες εκτελέσεις δεν είναι επιτάχυνση της ίδιας
+εξόδου.
+
+\section{Ρυθμαπόδοση, αποδοχή και ενέργεια}
+\label{sec:throughput}
+
+\begin{table}[ht]
+  \centering
+  \caption{Greedy καμπάνια στο ζεύγος Qwen2.5-14B/1.5B, ένα prompt κώδικα, 256
+    tokens, NVIDIA RTX A6000. Η στήλη «ίδια έξοδος» είναι ταύτιση
+  \texttt{token\_id} με την AR βάση.}
+  \label{tab:campaign}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}l r r r r r c@{}}
+    \toprule
+    Διαμόρφωση & tok/s & ms/tok & accept & J/tok & W & ίση έξοδος \\
+    \midrule
+    AR                     & 60.38 & 16.56 & ---   & 4.96 & 299 & --- \\
+    model, \(n_{\max}=2\)  & 54.01 & 18.52 & 0.90  & 5.39 & 291 & όχι \\
+    model, \(n_{\max}=4\)  & 60.15 & 16.63 & 0.76  & 4.72 & 284 & όχι \\
+    model, \(n_{\max}=8\)  & 54.50 & 18.35 & 0.56  & 5.08 & 277 & ναι \\
+    hybrid, \(n_{\max}=2\) & 55.13 & 18.14 & 0.64  & 5.36 & 296 & όχι \\
+    hybrid, \(n_{\max}=4\) & 61.44 & 16.28 & 0.64  & 4.63 & 285 & όχι \\
+    hybrid, \(n_{\max}=8\) & 64.99 & 15.39 & 0.58  & 4.20 & 273 & όχι \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{\input{figures/campaign-metrics}}
+  \caption{Ίδια καμπάνια με τον Πίνακα~\ref{tab:campaign}: ρυθμαπόδοση και
+    ενέργεια decode συναρτήσει του \(n_{\max}\). Η διακεκομμένη γραμμή είναι η
+    AR βάση. Μόνο η \mbox{model-only} εκτέλεση με \(n_{\max}=8\) ταυτίζεται
+    token-by-token με την βάση· οι υπόλοιπες μπάρες είναι ρυθμαπόδοση υπό
+  διαφορετική έξοδο.}
+  \label{fig:campaign}
+\end{figure}
+
+Τρία παρατηρήσιμα πρότυπα εμφανίζονται στον Πίνακα~\ref{tab:campaign} και στο
+Σχήμα~\ref{fig:campaign}.
+Οι προτάσεις που στάλθηκαν για επαλήθευση ήταν 82, 171 και 294 στη
+model-only διαδρομή (\(n_{\max}=2,4,8\)) και 120, 207 και 303 στην υβριδική.
+
+Πρώτον, υψηλή αποδοχή δεν συνεπάγεται επιτάχυνση. Η model-only διαμόρφωση με
+\(n_{\max}=2\) δέχθηκε το \(90\%\) των προτάσεων και ήταν η βραδύτερη
+(\(54.0\) tok/s). Το κόστος drafting και επαλήθευσης για λίγα tokens ανά γύρο
+δεν αποσβέστηκε.
+
+Δεύτερον, η μόνη διαμόρφωση με τεκμηριωμένη ισοδυναμία εξόδου, η model-only
+με \(n_{\max}=8\), ήταν βραδύτερη από την AR κατά περίπου \(10\%\) και
+ακριβότερη ανά token. Σε αυτό το ζεύγος και αυτό το prompt, το πρόχειρο 1.5B
+σε Q8 δεν ήταν αρκετά φθηνό ως προς τον κβαντισμένο στόχο 14B.
+
+Τρίτον, η υβριδική διαμόρφωση με \(n_{\max}=8\) είχε την υψηλότερη
+ρυθμαπόδοση και τη χαμηλότερη ενέργεια ανά token, με χαμηλότερη μέση ισχύ από
+την AR. Επειδή η έξοδος δεν ταυτίζεται με την βάση, το αποτέλεσμα διαβάζεται
+ως ένδειξη ότι το n-gram lookup μπορεί να μειώσει το κόστος drafting σε
+κώδικα, όχι ως απόδειξη επιτάχυνσης με ίδια έξοδο.
+
+Σε όλες τις κερδοσκοπικές εκτελέσεις μεγάλο μέρος των γύρων είχε κενή
+πρόταση (για \(n_{\max}=8\), 50 από 92 γύρους στη model-only και 37 από 79
+στην υβριδική). Οι κενοί γύροι εκφυλίζονται σε ένα αυτοπαλινδρομικό δείγμα
+στόχου και προσθέτουν σταθερό κόστος χωρίς όφελος μπλοκ. Στο
+Σχήμα~\ref{fig:token-mix} εμφανίζονται ως φέτα \texttt{ar}· στο
+Σχήμα~\ref{fig:rounds-n8} ως στήλη στο μηδέν, δίπλα σε έναν δεύτερο λόφο
+πλήρους αποδοχής του μπλοκ.
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{\input{figures/token-mix}}
+  \caption{Σύνθεση των \(256\) εκπεμπόμενων tokens ανά εκτέλεση. M\(k\) είναι
+    \mbox{model-only} με \(n_{\max}=k\), H\(k\) η υβριδική. Η φέτα
+    \texttt{ar} στις
+    κερδοσκοπικές εκτελέσεις είναι γύροι χωρίς πρόταση, όχι η αυτοπαλινδρομική
+  βάση. Το \texttt{draft} αθροίζει αποδεκτές προτάσεις μοντέλου και n-gram.}
+  \label{fig:token-mix}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{\input{figures/rounds-n8}}
+  \caption{Πλήθος αποδεκτών draft tokens ανά κερδοσκοπικό γύρο, για
+    \(n_{\max}=8\). Η στήλη στο \(0\) περιλαμβάνει κενές προτάσεις και γύρους
+    που απορρίφθηκαν στη θέση μηδέν. Ο λόφος στο \(7\) είναι σχεδόν πλήρης
+    αποδοχή του μπλοκ (το πρόχειρο μοντέλο πρότεινε συχνά \(7\) tokens, όχι
+  \(8\)).}
+  \label{fig:rounds-n8}
+\end{figure}
+
+\FloatBarrier
+
+\section{Απειλές κατά της εγκυρότητας}
+
+Εσωτερικά, η ελλιπής greedy parity είναι η σοβαρότερη απειλή. Επιπλέον, μία
+GPU χωρίς τεκμηριωμένη αποκλειστικότητα, μία επανάληψη ανά διαμόρφωση και η
+απουσία αφαίρεσης αδράνειας στην ενέργεια περιορίζουν την ακρίβεια των μικρών
+διαφορών (\(5\)--\(8\%\)). Η εννοιολογική εγκυρότητα των tok/s είναι
+ικανοποιητική εφόσον
+αποκλείεται το prefill. Η αποδοχή μετρά συμφωνία πρότασης, όχι ποιότητα
+κειμένου. Η εξωτερική εγκυρότητα περιορίζεται σε ένα ζεύγος Qwen2.5, ένα
+GGUF backend, ένα prompt κώδικα και greedy δειγματοληψία.
+
+\section{Απαντήσεις στα ερευνητικά ερωτήματα}
+
+\begin{description}[style=nextline,leftmargin=1.6em,font=\bfseries]
+  \item[RQ1.]
+    Όχι πλήρως. Ισοδυναμία token-by-token παρατηρήθηκε μόνο στη model-only
+    εκτέλεση με \(n_{\max}=8\).
+  \item[RQ2.]
+    Η αποδοχή πέφτει καθώς αυξάνεται το \(n_{\max}\) στη model-only διαδρομή
+    (\(0.90\rightarrow 0.76\rightarrow 0.56\)). Η ρυθμαπόδοση δεν ακολουθεί
+    μονότονα την αποδοχή. Στη μοναδική ισοδύναμη εκτέλεση η κερδοσκοπία ήταν
+    βραδύτερη από την AR.
+  \item[RQ3.]
+    Η ενέργεια ανά token κινήθηκε μαζί με τον χρόνο decode. Η υβριδική
+    \(n_{\max}=8\) είχε \(4.20\) J/token έναντι \(4.96\) της βάσης, υπό
+    διαφορετική έξοδο. Η μέση ισχύς μειώθηκε ελαφρά στις κερδοσκοπικές
+    διαδρομές.
+  \item[RQ4.]
+    Οι πρακτικοί περιορισμοί που εμφανίστηκαν είναι η πειθαρχία KV/sampler μετά
+    από μερική αποδοχή, οι κενοί γύροι πρότασης, και η ανάγκη ο recorder να
+    χωρίζει διόρθωση, bonus και αυτοπαλινδρομικό δείγμα. Χωρίς αυτά, η σύγκριση
+    στρατηγικών δεν είναι ερμηνεύσιμη.
+\end{description}
+
+\chapter{Συζήτηση}
+\label{ch:discussion}
+
+\section{Ερμηνεία}
+
+Το κεντρικό εμπειρικό μάθημα είναι ότι, στο συγκεκριμένο ζεύγος, το πρόχειρο
+μοντέλο δεν κέρδισε τον κβαντισμένο στόχο. Ένας στόχος 14B σε Q4\_K\_M είναι
+ήδη φθηνός ανά ανάγνωση βαρών. Ένα πρόχειρο 1.5B σε Q8 πληρώνει ακρίβεια που
+δεν μεταφράζεται σε ανάλογη μείωση καθυστέρησης. Η θεωρία του
+Κεφαλαίου~\ref{ch:background} το προέβλεπε: χωρίς
+\(t_{\mathrm{draft}}\ll t_{\mathrm{AR}}\) η αποδοχή δεν αρκεί.
+
+Η υβριδική διαδρομή είναι η μόνη που πλησίασε (και, σε tok/s, ξεπέρασε) τη
+βάση, σε prompt με επανάληψη προτύπων και με πολύ μικρό \(N=2\). Το μικρό
+\(N\) αυξάνει τις επιτυχίες και τα ψευδή θετικά. Επειδή η έξοδος δεν ταυτίστηκε
+με την AR, μέρος του «κέρδους» μπορεί να είναι διαφορετικό κείμενο, όχι
+φθηνότερη παραγωγή του ίδιου κειμένου.
+
+Οι κενοί γύροι εξηγούν γιατί ακόμη και καλή αποδοχή δεν αρκεί: πολλοί γύροι δεν
+αποσβένουν το κόστος του στόχου.
+Κάθε κενή πρόταση είναι ένας ακριβός στόχος χωρίς απόσβεση. Η διόρθωση αυτού
+του μηχανισμού προηγείται οποιασδήποτε συζήτησης για προσαρμοστικό
+\(n_{\max}\).
+
+\section{Πρακτικές συνέπειες}
+
+Υπό τις συνθήκες της καμπάνιας:
+
+\begin{itemize}[leftmargin=*]
+  \item Αν το ζητούμενο είναι πιστή greedy έξοδος του στόχου, η ασφαλέστερη
+    επιλογή παραμένει η αυτοπαλινδρομική βάση μέχρι να σταθεροποιηθεί η parity.
+  \item Αν το πρόχειρο μοντέλο δεν είναι σαφώς φθηνότερο από τον ήδη
+    κβαντισμένο στόχο, η model-only κερδοσκοπία μπορεί να επιβραδύνει.
+  \item Το n-gram lookup αξίζει ως πρώτη βαθμίδα σε κώδικα, αφού όμως μετρηθεί
+    ως χωριστή διαμόρφωση και αφού η έξοδος ταυτιστεί με τη βάση.
+  \item Η ενέργεια ανά token δεν αντέστρεψε την κατάταξη του χρόνου σε αυτή την
+    καμπάνια. Δεν προέκυψε σημείο «ταχύτερο αλλά ακριβότερο σε Joules».
+  \item Σε εξυπηρέτηση με μεγάλο batch ανεξάρτητων αιτημάτων η ίδια μέθοδος
+    μπορεί να μην αποσβένει: η πλεονάζουσα αριθμητική έχει ήδη διατεθεί και
+    τα απορριφθέντα υποψήφια tokens πληρώνουν πραγματικό υπολογιστικό κόστος.
+\end{itemize}
+
+Οι οδηγίες περιορίζονται σε GGUF, \texttt{llama.cpp} και μία A6000.
+
+\section{Μελλοντική εργασία}
+
+Τρεις επεκτάσεις προκύπτουν από μετρημένα κενά, όχι από γενική βιβλιογραφία.
+
+\paragraph{Κλείσιμο της greedy parity.}
+Πρώτη προτεραιότητα. Χωρίς σταθερή ισοδυναμία, κανένα επόμενο διάγραμμα
+ανταλλαγής χρόνου--ενέργειας δεν είναι αξιόπιστο. Ο έλεγχος πρέπει να καλύπτει
+κενή πρόταση, απόρριψη στην πρώτη θέση, πλήρη αποδοχή με bonus, και υβριδική
+επιτυχία ή αστοχία του lookup.
+
+\paragraph{N-gram ως χωριστή διαμόρφωση και σήμανση πηγής ανά γύρο.}
+Η καμπάνια δεν μπορεί να πει πόσο ωφελεί το lookup έναντι του μοντέλου, επειδή
+λείπουν ετικέτες \texttt{ngram|model|none} ανά γύρο και λείπει n-gram-only
+εκτέλεση.
+
+\paragraph{Σταθερό \(n_{\max}\) έναντι απλού κανόνα διακοπής.}
+Μόλις σταθεροποιηθεί η ισοδυναμία, ένα κριτήριο χωρίς εκπαίδευση, τύπου
+AdaEDL~\cite{agrawal2024adaedl}, μπορεί να συγκριθεί με τις στατικές τιμές
+\(\{2,4,8\}\) στα ίδια tok/s και J/token. Δενδρική κερδοσκοπία και χαλαρή
+αποδοχή \(\lambda p/q\) παραμένουν εκτός του τρέχοντος ορίζοντα.
+
+\chapter{Συμπεράσματα}
+\label{ch:conclusions}
+
+\section{Σύνοψη}
+
+Η εργασία αντιμετώπισε την κερδοσκοπική αποκωδικοποίηση ως πρόβλημα
+συστήματος: κοινός στόχος, φθηνότερη πρόταση, batched επαλήθευση, μετρήσιμο
+κόστος. Το \texttt{spectre} υλοποιεί αυτό το σχήμα ως συμφωνία sampler πάνω
+από τη \texttt{libllama} και καταγράφει χρόνο, αποδοχή και ενέργεια decode.
+
+Στην πρώτη καμπάνια, σε RTX A6000 και στο ζεύγος Qwen2.5-14B/1.5B, η
+κερδοσκοπία μόνο με πρόχειρο μοντέλο δεν επιτάχυνε την πιστή greedy έξοδο. Η
+υβριδική διαδρομή βελτίωσε tok/s και J/token σε prompt κώδικα, χωρίς όμως να
+ικανοποιήσει την ισοδυναμία ακολουθίας. Το αποτέλεσμα είναι χρήσιμο ακριβώς
+επειδή είναι υπό συνθήκες: δείχνει πότε η μέθοδος πληρώνει το drafter και
+πότε η υλοποίηση δεν έχει ακόμη το δικαίωμα να μιλά για επιτάχυνση με ίδια
+έξοδο.
+
+\section{Περιορισμοί}
+
+Η μελέτη περιορίζεται σε ένα GPU, μία οικογένεια μοντέλων, ένα prompt, greedy
+δειγματοληψία και μία επανάληψη ανά διαμόρφωση. Ο επαληθευτής δεν υλοποιεί τον
+κανόνα \(p/q\). Δεν μετρήθηκε σάρωση κβαντισμού. Δεν μετρήθηκε n-gram-only
+βάση. Η πληρέστερη γενίκευση που επιτρέπουν τα δεδομένα είναι ότι, σε ήδη
+κβαντισμένο στόχο σταθμού εργασίας, το όφελος της κερδοσκοπίας κρίνεται από
+το πραγματικό κόστος του drafter και από την ορθότητα του επαληθευτή, όχι από
+τον μέσο όρο αποδοχής.
+
+\section{Επίλογος}
+
+Η φθηνή πρόβλεψη έχει αξία μόνον όταν η ακριβή επαλήθευση αποσβένει το κόστος
+της πρότασης και όταν το σύστημα εκπέμπει αυτό που υπόσχεται. Το
+\texttt{spectre} καθιστά και τα δύο ελέγξιμα. Η επόμενη χρήσιμη κίνηση είναι
+να κλείσει η ισοδυναμία greedy ακολουθίας και να επαναληφθεί ο πίνακας σε
+περισσότερους φόρτους, με την ίδια αυστηρότητα στους μετρητές.
+
+\appendix
+
+\chapter{Διαμορφώσεις της καμπάνιας}
+\label{app:configs}
+
+Κοινά στοιχεία όλων των εκτελέσεων του Πίνακα~\ref{tab:campaign}:
+\texttt{n-predict=256}, context 4096, όλα τα στρώματα στη GPU, greedy
+δειγματοληψία, seed 1234. Στόχος: Qwen2.5-14B-Instruct σε Q4\_K\_M. Πρόχειρο
+μοντέλο, όπου υπάρχει: Qwen2.5-1.5B-Instruct σε Q8\_0. Prompt:
+
+\begin{quote}
+  \small
+  Write a short Python function that returns the n-th Fibonacci number using
+  memoization, then briefly explain how it works.
+\end{quote}
+
+Η υβριδική διαδρομή είχε \texttt{n-gram-size=2}. Η αυτοπαλινδρομική βάση δεν
+φορτώνει πρόχειρο μοντέλο.
+
+\chapter{Σχήμα αρχείων εξόδου}
+\label{app:schema}
+
+Το \texttt{tokens.csv} έχει μία γραμμή ανά εκπεμπόμενο token, με στήλες για
+δείκτη βήματος, γύρο, είδος πηγής, θέση στην πρόταση, αναγνωριστικό token,
+πιθανότητα στόχου, απορριφθέν draft, πιθανότητα drafter, logit και logprob.
+Κενή θέση πρόχειρου δηλώνεται ως κενό πεδίο, όχι ως \(-1\). Σε γραμμή
+διόρθωσης το εκπεμπόμενο token είναι του στόχου· το απορριφθέν draft
+καταγράφεται χωριστά.
+
+Το \texttt{meta.json} κρατά το στιγμιότυπο παραμέτρων, τα σύνολα εκπεμπόμενων,
+προτεινόμενων, αποδεκτών και bonus tokens, χρόνους prompt/decode, ενέργεια
+ανά εκτέλεση και ανά token, το όνομα της GPU, και μία λίστα γύρων με μήκος
+πρότασης, πλήθος αποδοχών και δείκτη απόρριψης (\texttt{null} σε πλήρη
+συμφωνία).
 
 % ============================= References ===================================
-\nocite{*}
-\printbibliography[heading=bibintoc]   % localized title -> "Βιβλιογραφία"
+{\sloppy
+\printbibliography[heading=bibintoc]}
 
 \end{document}
 
-%%% Local Variables:
-%%% mode: LaTeX
-%%% TeX-master: t
-%%% End:

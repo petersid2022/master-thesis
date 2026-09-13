@@ -1,0 +1,47 @@
+% Sampler-agreement on a linear proposal F G H. Caption lives in thesis.tex.
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={
+    draw,
+    rounded corners=1.5pt,
+    minimum width=1.35cm,
+    minimum height=0.64cm,
+    inner sep=1pt,
+    font=\ttfamily\small,
+    anchor=center,
+  },
+  lbl/.style={anchor=east, font=\footnotesize, align=right},
+]
+\def\xA{5.15}
+\def\xB{6.75}
+\def\xC{8.35}
+\def\xD{9.95}
+
+\node[font=\bfseries\small, anchor=west] at (0.15,3.35) {%
+  Γραμμική επαλήθευση, από αριστερά προς τα δεξιά};
+
+\node[lbl] at (3.85,2.45) {πρόταση};
+\node[box, fill=dftC!18, draw=dftC] at (\xA,2.45) {F};
+\node[box, fill=dftC!18, draw=dftC] at (\xB,2.45) {G};
+\node[box, fill=dftC!18, draw=dftC] at (\xC,2.45) {H};
+\node[font=\footnotesize, text=arC] at (\xD,2.45) {(bonus)};
+
+\node[font=\scriptsize, text=dftC] at (\xA,1.92) {$\checkmark$ draft};
+\node[font=\scriptsize, text=dftC] at (\xB,1.92) {$\checkmark$ draft};
+\node[font=\scriptsize, text=rejC] at (\xC,1.92) {$\times$ stop};
+
+\node[lbl] at (3.85,1.35) {δείγμα στόχου};
+\node[box, fill=dftC!35, draw=dftC] at (\xA,1.35) {F};
+\node[box, fill=dftC!35, draw=dftC] at (\xB,1.35) {G};
+\node[box, fill=rejC!18, draw=rejC] at (\xC,1.35) {X};
+\node[box, dashed, draw=arC, text=arC] at (\xD,1.35) {---};
+
+\draw[tgtC, thick] (\xA-0.72,0.78) -- (\xC+0.72,0.78);
+\node[font=\footnotesize, text=tgtC, anchor=east] at (3.85,0.78) {%
+  ένα \texttt{llama\_decode}};
+
+\node[lbl] at (3.85,0.20) {εκπομπή};
+\node[box, fill=dftC!35, draw=dftC] at (\xA,0.20) {F};
+\node[box, fill=dftC!35, draw=dftC] at (\xB,0.20) {G};
+\node[box, fill=rejC!18, draw=rejC] at (\xC,0.20) {X};
+\end{tikzpicture}

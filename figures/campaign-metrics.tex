@@ -1,0 +1,56 @@
+% Campaign tok/s and J/token vs n_max. Data: APOTELESMATA, 2026-09-03.
+\begin{tikzpicture}
+\begin{groupplot}[
+  group style={
+    group size=2 by 1,
+    horizontal sep=1.85cm,
+  },
+  width=0.38\textwidth,
+  height=6.1cm,
+  scale only axis,
+  ymin=0,
+  enlarge x limits=0.28,
+  xtick={2,4,8},
+  xlabel={$n_{\max}$},
+  tick label style={font=\footnotesize},
+  label style={font=\small},
+  title style={font=\small\bfseries},
+  ylabel style={font=\small},
+  legend style={
+    font=\footnotesize,
+    draw=none,
+    at={(0.02,0.98)},
+    anchor=north west,
+    cells={anchor=west},
+  },
+  every axis/.append style={ybar, bar width=9pt},
+  every axis plot/.append style={fill opacity=0.92},
+]
+\nextgroupplot[
+  title={(α)~Ρυθμαπόδοση decode},
+  ylabel={tok/s},
+  ymax=80,
+]
+\addplot[fill=tgtC!75, draw=tgtC] coordinates {(2,54.01) (4,60.15) (8,54.50)};
+\addplot[fill=dftC!75, draw=dftC] coordinates {(2,55.13) (4,61.44) (8,64.99)};
+\draw[inkC, dashed, thick]
+  ({rel axis cs:0,0}|-{axis cs:2,60.38}) --
+  ({rel axis cs:1,0}|-{axis cs:2,60.38});
+\node[anchor=south east, font=\scriptsize, text=inkC, inner sep=1pt]
+  at (rel axis cs:0.98,0.755) {AR $60.4$};
+\legend{πρόχειρο μοντέλο, υβριδικό}
+
+\nextgroupplot[
+  title={(β)~Ενέργεια decode},
+  ylabel={J/token},
+  ymax=6.6,
+]
+\addplot[fill=tgtC!75, draw=tgtC] coordinates {(2,5.39) (4,4.72) (8,5.08)};
+\addplot[fill=dftC!75, draw=dftC] coordinates {(2,5.36) (4,4.63) (8,4.20)};
+\draw[inkC, dashed, thick]
+  ({rel axis cs:0,0}|-{axis cs:2,4.96}) --
+  ({rel axis cs:1,0}|-{axis cs:2,4.96});
+\node[anchor=south east, font=\scriptsize, text=inkC, inner sep=1pt]
+  at (rel axis cs:0.98,0.752) {AR $4.96$};
+\end{groupplot}
+\end{tikzpicture}

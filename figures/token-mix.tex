@@ -1,0 +1,42 @@
+% Per-run composition of the 256 emitted tokens. Data: APOTELESMATA tokens.csv.
+\begin{tikzpicture}
+\begin{axis}[
+  ybar stacked,
+  bar width=11.5pt,
+  width=0.88\textwidth,
+  height=6.4cm,
+  scale only axis,
+  ymin=0,
+  ymax=256,
+  xtick={1,2,3,4,5,6,7},
+  xticklabels={AR, M2, M4, M8, H2, H4, H8},
+  xticklabel style={font=\footnotesize},
+  ylabel={εκπεμπόμενα tokens},
+  label style={font=\small},
+  tick label style={font=\footnotesize},
+  enlarge x limits=0.08,
+  legend style={
+    font=\footnotesize,
+    draw=none,
+    legend columns=4,
+    at={(0.5,-0.22)},
+    anchor=north,
+    /tikz/every even column/.append style={column sep=0.7cm},
+  },
+  legend cell align=left,
+]
+\addplot[fill=arC!70, draw=arC] coordinates {
+  (1,256) (2,100) (3,69) (4,50) (5,88) (6,58) (7,37)
+};
+\addplot[fill=tgtC!80, draw=tgtC] coordinates {
+  (1,0) (2,74) (3,130) (4,165) (5,77) (6,133) (7,177)
+};
+\addplot[fill=rejC!75, draw=rejC] coordinates {
+  (1,0) (2,8) (3,19) (4,25) (5,28) (6,26) (7,21)
+};
+\addplot[fill=bonC!70, draw=bonC] coordinates {
+  (1,0) (2,74) (3,38) (4,16) (5,63) (6,39) (7,21)
+};
+\legend{\texttt{ar} (κενή πρόταση), \texttt{draft}, \texttt{correction}, \texttt{bonus}}
+\end{axis}
+\end{tikzpicture}

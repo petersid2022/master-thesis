@@ -1,0 +1,88 @@
+% Conceptual: serial AR decode vs draft--verify. Caption lives in thesis.tex.
+\begin{tikzpicture}[
+  font=\small,
+  >=Stealth,
+  pass/.style={
+    draw=tgtC,
+    fill=tgtC!12,
+    rounded corners=2pt,
+    minimum width=2.2cm,
+    minimum height=0.72cm,
+    align=center,
+    inner sep=2pt,
+    font=\footnotesize,
+  },
+  dpass/.style={
+    draw=dftC,
+    fill=dftC!12,
+    rounded corners=2pt,
+    minimum width=1.7cm,
+    minimum height=0.58cm,
+    align=center,
+    inner sep=1.5pt,
+    font=\footnotesize,
+  },
+  tok/.style={
+    draw,
+    rounded corners=1.5pt,
+    minimum width=0.72cm,
+    minimum height=0.52cm,
+    inner sep=1pt,
+    font=\ttfamily\footnotesize,
+  },
+]
+\node[anchor=west, font=\bfseries\small] at (0,4.85) {%
+  (α)~Αυτοπαλινδρομικό decode: ένα πέρασμα, ένα token};
+
+\node[pass] (P0) at (1.20,3.95) {στόχος};
+\node[tok, fill=tgtC!20] (T0) at (2.90,3.95) {$t_1$};
+\draw[->, thick, tgtC] (P0) -- (T0);
+
+\node[pass] (P1) at (4.85,3.95) {στόχος};
+\node[tok, fill=tgtC!20] (T1) at (6.55,3.95) {$t_2$};
+\draw[->, thick, tgtC] (P1) -- (T1);
+
+\node[pass] (P2) at (8.50,3.95) {στόχος};
+\node[tok, fill=tgtC!20] (T2) at (10.20,3.95) {$t_3$};
+\draw[->, thick, tgtC] (P2) -- (T2);
+\node[font=\footnotesize, text=arC] at (11.55,3.95) {$\cdots$};
+
+\draw[->, thick, arC] (T0) -- (P1);
+\draw[->, thick, arC] (T1) -- (P2);
+
+\node[anchor=west, font=\footnotesize, text=arC, text width=13.5cm] at (0,3.15) {%
+  Κάθε βέλος είναι πλήρες forward pass: σχεδόν όλα τα βάρη διαβάζονται για
+  \emph{ένα} νέο token. Σε μικρό batch η GPU περιμένει τη μνήμη.};
+
+\node[anchor=west, font=\bfseries\small] at (0,2.35) {%
+  (β)~Κερδοσκοπία: φθηνή πρόταση, μία batched επαλήθευση};
+
+\node[dpass] (D0) at (0.95,1.45) {drafter};
+\node[tok, fill=dftC!25, draw=dftC] (D1) at (2.40,1.45) {$d_1$};
+\node[tok, fill=dftC!25, draw=dftC] (D2) at (3.30,1.45) {$d_2$};
+\node[tok, fill=dftC!25, draw=dftC] (D3) at (4.20,1.45) {$d_3$};
+\node[tok, fill=dftC!25, draw=dftC] (D4) at (5.10,1.45) {$d_4$};
+\draw[->, dftC] (D0) -- (D1);
+\draw[->, dftC] (D1) -- (D2);
+\draw[->, dftC] (D2) -- (D3);
+\draw[->, dftC] (D3) -- (D4);
+
+\node[pass, minimum width=4.35cm] (V) at (9.15,1.45) {στόχος: ένα batched πέρασμα};
+\draw[->, ultra thick, tgtC] (D4.east) -- (V.west);
+
+\node[tok, fill=dftC!35, draw=dftC] (A1) at (2.40,0.40) {$d_1$};
+\node[font=\scriptsize, text=dftC] at (2.40,0.82) {$\checkmark$};
+\node[tok, fill=dftC!35, draw=dftC] (A2) at (3.30,0.40) {$d_2$};
+\node[font=\scriptsize, text=dftC] at (3.30,0.82) {$\checkmark$};
+\node[tok, fill=rejC!20, draw=rejC] (X) at (4.20,0.40) {$x$};
+\node[font=\scriptsize, text=rejC] at (4.20,0.82) {$\times$};
+\node[tok, dashed, draw=arC, text=arC] (R) at (5.10,0.40) {$d_4$};
+
+\node[anchor=west, font=\footnotesize, text=inkC, text width=13.5cm] at (0,-0.35) {%
+  Αποδοχή $d_1,d_2$. Απόρριψη του $d_3$: ο στόχος εκπέμπει διόρθωση $x$.
+  Το $d_4$ απορρίπτεται χωρίς να χρησιμοποιηθεί.};
+
+\node[anchor=west, font=\footnotesize, text=arC, text width=13.5cm] at (0,-1.05) {%
+  Ο στόχος δεν παρακάμπτεται και δεν προσεγγίζεται. Τρέχει σε κάθε γύρο·
+  η ωφέλεια είναι περισσότερα εκπεμπόμενα tokens ανά ανάγνωση των βαρών του.};
+\end{tikzpicture}
