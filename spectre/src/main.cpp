@@ -2170,9 +2170,14 @@ private:
     pool[i] = tokens[params.n_gram_size];
   }
 
+  //
+  // TODO: implement
+  //
   // last-seen successor table, indexed by a hash of the last n tokens
   // basically last time I saw this, the next token was X
   std::vector<llama_token> draft_using_ngram_mod() {
+    throw SpectreError("TODO: {}:{}: draft_using_ngram_mod", __FILE__, __LINE__);
+
     algorithm = SpeculationAlgorithm::NgramMod;
 
     const auto &tokens = tokens_in_target_kv;
@@ -2544,6 +2549,8 @@ private:
                        draft_next_pos,          /* pos */
                        true                     /* output */
       );
+
+      result.push_back(proposed_token);
 
       //
       // evaluate the batch => update KV cache and compute logits for the batch
