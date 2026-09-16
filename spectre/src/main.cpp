@@ -231,6 +231,8 @@ private:
   std::mutex mu_;
   std::vector<Sample> samples_;
   std::thread sampler_;
+
+  friend struct SpectreTests;
 };
 
 class InferenceTelemetry {
@@ -634,65 +636,6 @@ VerificationResults verify_draft_proposals(const std::vector<llama_token> &propo
   return results;
 }
 
-struct SpectreTests {
-  static inline int fails = 0;
-
-  static void check(bool ok, std::string_view name) {
-    if (!ok) {
-      print(GGML_LOG_LEVEL_ERROR, "FAIL {}", name);
-      ++fails;
-    } else {
-      print(GGML_LOG_LEVEL_INFO, "ok   {}", name);
-    }
-  }
-
-  static int run_self_tests() {
-    // empty proposal -> one target sample, kind ar, not bonus
-    {
-      auto r = verify_draft_proposals({}, [](std::size_t) { return llama_token{7}; });
-      check(r.kind == VerificationKind::Autoregressive, "empty_is_ar");
-      check(r.target_token == 7, "empty_target");
-      check(r.accepted_drafts.empty(), "empty_no_drafts");
-      check(!r.rejected_proposal_index, "empty_no_reject");
-    }
-    // mismatch at 0 -> correction, nothing accepted
-    {
-      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
-        return llama_token{i == 0 ? 9 : 1};
-      });
-      check(r.kind == VerificationKind::Correction, "reject0_kind");
-      check(r.target_token == 9, "reject0_token");
-      check(r.rejected_proposal_index == 0, "reject0_index");
-      check(r.accepted_drafts.empty(), "reject0_accepted");
-    }
-    // match then reject -> accepted prefix, stop
-    {
-      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
-        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 9};
-      });
-      check(r.kind == VerificationKind::Correction, "reject2_kind");
-      check(r.rejected_proposal_index == 2, "reject2_index");
-      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "reject2_prefix");
-    }
-    // full match -> bonus is sample at proposes.size()
-    {
-      auto r = verify_draft_proposals({1, 2}, [](std::size_t i) {
-        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 99};
-      });
-      check(r.kind == VerificationKind::Bonus, "bonus_kind");
-      check(r.target_token == 99, "bonus_token");
-      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "bonus_accepted");
-      check(!r.rejected_proposal_index, "bonus_no_reject");
-    }
-    if (fails) {
-      print(GGML_LOG_LEVEL_ERROR, "{} failed", fails);
-      return 1;
-    }
-    print("all tests ok!");
-    return 0;
-  }
-};
-
 struct InferenceRoundSummary {
   int tokens_drafted_this_round = 0;
   int drafts_accepted_this_round = 0;
@@ -982,6 +925,7 @@ private:
   std::ofstream tokens;
   std::vector<InferenceRoundSummary> rounds;
   int step = 0;
+  friend struct SpectreTests;
 };
 
 class SpectreConfig {
@@ -1043,6 +987,85 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("Misc:");
   print("  -h, --help               print this message and exit");
 }
+
+struct SpectreTests {
+  static inline int fails = 0;
+
+  static void check(bool ok, std::string_view name) {
+    if (!ok) {
+      print(GGML_LOG_LEVEL_ERROR, "FAIL {}", name);
+      ++fails;
+    } else {
+      print(GGML_LOG_LEVEL_INFO, "ok   {}", name);
+    }
+  }
+
+  static int run_self_tests() {
+    // empty proposal -> one target sample, kind ar, not bonus
+    {
+      auto r = verify_draft_proposals({}, [](std::size_t) { return llama_token{7}; });
+      check(r.kind == VerificationKind::Autoregressive, "empty_is_ar");
+      check(r.target_token == 7, "empty_target");
+      check(r.accepted_drafts.empty(), "empty_no_drafts");
+      check(!r.rejected_proposal_index, "empty_no_reject");
+    }
+    // mismatch at 0 -> correction, nothing accepted
+    {
+      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
+        return llama_token{i == 0 ? 9 : 1};
+      });
+      check(r.kind == VerificationKind::Correction, "reject0_kind");
+      check(r.target_token == 9, "reject0_token");
+      check(r.rejected_proposal_index == 0, "reject0_index");
+      check(r.accepted_drafts.empty(), "reject0_accepted");
+    }
+    // match then reject -> accepted prefix, stop
+    {
+      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
+        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 9};
+      });
+      check(r.kind == VerificationKind::Correction, "reject2_kind");
+      check(r.rejected_proposal_index == 2, "reject2_index");
+      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "reject2_prefix");
+    }
+    // full match -> bonus is sample at proposes.size()
+    {
+      auto r = verify_draft_proposals({1, 2}, [](std::size_t i) {
+        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 99};
+      });
+      check(r.kind == VerificationKind::Bonus, "bonus_kind");
+      check(r.target_token == 99, "bonus_token");
+      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "bonus_accepted");
+      check(!r.rejected_proposal_index, "bonus_no_reject");
+    }
+    // json_escape various smoke test cases
+    {
+      const std::string in = "Qwen \"3B\"\nC:\\models\t\r\x01";
+      const std::string want = "Qwen \\\"3B\\\"\\nC:\\\\models\\t\\r\\u0001";
+      check(InferenceRunRecorder::json_escape(in) == want, "json_escape_simple");
+      check(InferenceRunRecorder::json_escape(R"(say "hi")") == "say \\\"hi\\\"", "json_escape_quote");
+      check(InferenceRunRecorder::json_escape("C:\\x") == "C:\\\\x", "json_escape_backslash");
+      check(InferenceRunRecorder::json_escape("a\nb") == "a\\nb", "json_escape_nl");
+      check(InferenceRunRecorder::json_escape("a\tb") == "a\\tb", "json_escape_tab");
+      check(InferenceRunRecorder::json_escape("a\rb") == "a\\rb", "json_escape_cr");
+      check(InferenceRunRecorder::json_escape("\x01") == "\\u0001", "json_escape_ctrl");
+      check(InferenceRunRecorder::json_escape("ok") == "ok", "json_escape_plain");
+    }
+    // unsigned_delta UINT64_MAX
+    {
+      std::uint64_t start = 1;
+      std::uint64_t end = 0;
+      std::uint64_t got = NvmlGpu::unsigned_delta(start, end);
+      check(got == 0xffffffffffffffff, "unsigned_delta_uint64_max");
+    }
+    if (fails) {
+      print(GGML_LOG_LEVEL_ERROR, "{} failed", fails);
+      return 1;
+    }
+    print("all tests ok!");
+    return 0;
+  }
+};
 
 SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
   SpectreConfig config{};
