@@ -77,6 +77,6 @@ else()
   target_compile_options(
     spectre
     PRIVATE $<$<CONFIG:Release>:-ffp-contract=fast>
-            $<$<CONFIG:Release>:-ffast-math> $<$<CONFIG:Release>:-march=native>
-            $<$<CONFIG:Release>:-O3>)
+            #[[$<$<CONFIG:Release>:-ffast-math>]]
+            $<$<CONFIG:Release>:-march=native> $<$<CONFIG:Release>:-O3>)
 endif()
