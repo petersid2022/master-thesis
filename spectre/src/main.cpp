@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -601,6 +602,97 @@ struct VerificationResults {
   std::optional<std::size_t> rejected_proposal_index = std::nullopt;
 };
 
+template <typename Sample>
+VerificationResults verify_draft_proposals(const std::vector<llama_token> &proposes, Sample sample) {
+  VerificationResults results;
+  results.accepted_drafts.reserve(proposes.size());
+
+  for (std::size_t i = 0; i < proposes.size(); ++i) {
+    // given the current logits, pick a token using the sampler (greedy or stochastic or mock)
+    const llama_token token = sample(i);
+
+    // stop at first mismatch
+    if (proposes[i] != token) {
+      results.target_token = token;
+      results.rejected_proposal_index = i;
+      results.kind = VerificationKind::Correction;
+      return results;
+    }
+
+    results.accepted_drafts.push_back(token);
+  }
+
+  //
+  // * after all N proposals match, logits at index N predict the token after the final proposal
+  //
+  // * sampling it gives the free (no additional target-model forward pass) bonus token from the
+  //   same target-model decode
+  //
+  results.target_token = sample(proposes.size());
+  results.kind = proposes.empty() ? VerificationKind::Autoregressive : VerificationKind::Bonus;
+
+  return results;
+}
+
+struct SpectreTests {
+  static inline int fails = 0;
+
+  static void check(bool ok, std::string_view name) {
+    if (!ok) {
+      print(GGML_LOG_LEVEL_ERROR, "FAIL {}", name);
+      ++fails;
+    } else {
+      print(GGML_LOG_LEVEL_INFO, "ok   {}", name);
+    }
+  }
+
+  static int run_self_tests() {
+    // empty proposal -> one target sample, kind ar, not bonus
+    {
+      auto r = verify_draft_proposals({}, [](std::size_t) { return llama_token{7}; });
+      check(r.kind == VerificationKind::Autoregressive, "empty_is_ar");
+      check(r.target_token == 7, "empty_target");
+      check(r.accepted_drafts.empty(), "empty_no_drafts");
+      check(!r.rejected_proposal_index, "empty_no_reject");
+    }
+    // mismatch at 0 -> correction, nothing accepted
+    {
+      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
+        return llama_token{i == 0 ? 9 : 1};
+      });
+      check(r.kind == VerificationKind::Correction, "reject0_kind");
+      check(r.target_token == 9, "reject0_token");
+      check(r.rejected_proposal_index == 0, "reject0_index");
+      check(r.accepted_drafts.empty(), "reject0_accepted");
+    }
+    // match then reject -> accepted prefix, stop
+    {
+      auto r = verify_draft_proposals({1, 2, 3}, [](std::size_t i) {
+        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 9};
+      });
+      check(r.kind == VerificationKind::Correction, "reject2_kind");
+      check(r.rejected_proposal_index == 2, "reject2_index");
+      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "reject2_prefix");
+    }
+    // full match -> bonus is sample at proposes.size()
+    {
+      auto r = verify_draft_proposals({1, 2}, [](std::size_t i) {
+        return llama_token{i < 2 ? static_cast<llama_token>(i + 1) : 99};
+      });
+      check(r.kind == VerificationKind::Bonus, "bonus_kind");
+      check(r.target_token == 99, "bonus_token");
+      check((r.accepted_drafts == std::vector<llama_token>{1, 2}), "bonus_accepted");
+      check(!r.rejected_proposal_index, "bonus_no_reject");
+    }
+    if (fails) {
+      print(GGML_LOG_LEVEL_ERROR, "{} failed", fails);
+      return 1;
+    }
+    print("all tests ok!");
+    return 0;
+  }
+};
+
 struct InferenceRoundSummary {
   int tokens_drafted_this_round = 0;
   int drafts_accepted_this_round = 0;
@@ -945,6 +1037,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --run-id <id>            unique run identifier (default: auto-generated as YYYYMMDD-HHMMSS_<mode>_seed<N>)");
   print("  --results-dir <path>     where to write <run-id>/{{meta.json,tokens.csv}} (default: \"{}\")", params.results_dir);
   print("  --verbose                per-round recap: drafter, accepted n/k, draft vs target, token ids (default: {})", params.verbose ? "true" : "false");
+  print("  --test                   run sampler-agreement checks and exit (no models)");
   print("  --version                show version information and exit");
   print("");
   print("Misc:");
@@ -960,6 +1053,8 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
       if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
         config.print_usage(argv);
         std::exit(0);
+      } else if (std::strcmp(argv[i], "--test") == 0) {
+        std::exit(SpectreTests::run_self_tests());
       } else if (std::strcmp(argv[i], "--target-model") == 0) {
         if (i + 1 < argc) {
           params.target_model_path = argv[++i];
@@ -2082,54 +2177,14 @@ private:
   }
 
   VerificationResults verify_draft_proposals(const std::vector<llama_token> &proposes) {
+    llama_synchronize(ctx_target.get());
 
-    auto ctx = ctx_target.get();
-    auto sampler = sampler_target.get();
+    auto *ctx = ctx_target.get();
+    auto *sampler = sampler_target.get();
 
-    llama_synchronize(ctx); // wait until all computations are finished
-
-    VerificationResults results;
-
-    auto &kind = results.kind;
-    auto &accepted = results.accepted_drafts;
-    auto &target_token = results.target_token;
-    auto &rejection_position = results.rejected_proposal_index;
-
-    accepted.reserve(proposes.size() + 1);
-
-    for (std::size_t index = 0; index < proposes.size(); ++index) {
-      // given the current logits, pick a token using the sampler (greedy or stochastic)
-      const llama_token token = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(index));
-
-      // stop at first mismatch
-      if (proposes[index] != token) {
-        target_token = token;
-        rejection_position = index;
-        kind = VerificationKind::Correction;
-        return results;
-      }
-
-      accepted.push_back(token);
-    }
-
-    //
-    // * after all N proposals match, logits at index N predict the token after the final proposal
-    //
-    // * sampling it gives the free (no additional target-model forward pass) bonus token from the
-    //   same target-model decode
-    //
-    const llama_token bonus = llama_sampler_sample(sampler, ctx, static_cast<int32_t>(proposes.size()));
-
-    if (proposes.empty()) {
-      kind = VerificationKind::Autoregressive;
-    } else {
-      kind = VerificationKind::Bonus;
-    }
-
-    target_token = bonus;
-    rejection_position = std::nullopt;
-
-    return results;
+    return ::verify_draft_proposals(proposes, [&](std::size_t i) {
+      return llama_sampler_sample(sampler, ctx, static_cast<int32_t>(i));
+    });
   }
 
   // READ: https://web.stanford.edu/~jurafsky/slp3/3.pdf
