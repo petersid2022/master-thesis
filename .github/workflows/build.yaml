@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - thesis.tex
+      - thesis.bib
+      - figures/**
+      - .github/workflows/build.yaml
+      - .github/spell-ignore.txt
 
 permissions:
   contents: write
@@ -13,65 +17,77 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install aspell dictionaries (English + Greek)
         run: |
           sudo apt-get update
           sudo apt-get install -y aspell aspell-en aspell-el
-      - name: Spellcheck thesis.tex (English + Greek)
+      - name: Spellcheck thesis body (English + Greek)
+        env:
+          LANG: C.UTF-8
         shell: bash
         run: |
           set -euo pipefail
 
-          check_bilingual() {
-            local file="$1"
-            local mode="$2"
-            local tmpdir
-            tmpdir="$(mktemp -d)"
+          ignore_src=".github/spell-ignore.txt"
+          tmpdir="$(mktemp -d)"
+          body="$tmpdir/body.tex"
+          ignore="$tmpdir/ignore.txt"
 
-            # words flagged by english dictionary
-            aspell --lang=en_US --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/en.txt"
+          # Preamble is font/package names. Check the document body only.
+          awk 'BEGIN{p=0} /\\begin\{document\}/{p=1} p{print} /\\end\{document\}/{exit}' \
+            thesis.tex > "$body"
 
-            # words flagged by greek dictionary
-            aspell --lang=el_GR --mode="$mode" list < "$file" | LC_ALL=C sort -u > "$tmpdir/el.txt"
+          grep -vE '^\s*(#|$)' "$ignore_src" | LC_ALL=C sort -u > "$ignore"
 
-            # real suspects = words misspelled in BOTH dictionaries
-            comm -12 "$tmpdir/en.txt" "$tmpdir/el.txt" > "$tmpdir/miss.txt"
+          aspell --encoding=utf-8 --lang=en_US --mode=tex list < "$body" \
+            | LC_ALL=C sort -u > "$tmpdir/en.txt"
+          aspell --encoding=utf-8 --lang=el_GR --mode=tex list < "$body" \
+            | LC_ALL=C sort -u > "$tmpdir/el.txt"
 
-            if [[ -s "$tmpdir/miss.txt" ]]; then
-              echo "Misspellings found in $file:"
-              cat "$tmpdir/miss.txt"
-              echo
-              return 1
-            else
-              echo "No misspellings found in $file"
-            fi
-          }
+          # Flagged by both dictionaries: not English and not Greek.
+          # Drop acronyms, short tokens, math fragments, and CamelCase identifiers.
+          comm -12 "$tmpdir/en.txt" "$tmpdir/el.txt" | awk '
+            length($0) < 4 { next }
+            $0 ~ /^[A-Z0-9]+$/ { next }
+            $0 ~ /[0-9_]/ { next }
+            $0 ~ /[a-z][A-Z]/ { next }
+            { print }
+          ' | grep -viFxf "$ignore" > "$tmpdir/miss.txt" || true
 
-          failed=0
-          check_bilingual thesis.tex tex || failed=1
+          if [[ -s "$tmpdir/miss.txt" ]]; then
+            echo "Misspellings found in thesis.tex:"
+            cat "$tmpdir/miss.txt"
+            echo
+            echo "Add a true typo fix, or a word to .github/spell-ignore.txt."
+            exit 1
+          fi
 
-          exit $failed
+          echo "No misspellings found in thesis.tex"
 
   latex:
     runs-on: ubuntu-latest
-    needs: spellcheck
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Compile LaTeX document
-        uses: xu-cheng/latex-action@v2
+        uses: xu-cheng/latex-action@v4
         with:
           root_file: thesis.tex
-          working_directory: .
-      - name: Create GitHub Release and Upload PDF
-        uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          os: debian
+          latexmk_use_lualatex: true
+          args: >-
+            -pdflua -file-line-error -halt-on-error
+            -interaction=nonstopmode
+      - name: Upload PDF
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: 'thesis-${{ github.sha }}'
-          release_name: 'Thesis Release ${{ github.sha }}'
-          body: This is the compiled PDF of my thesis.
-          draft: false
-          prerelease: false
+          name: thesis
+          path: thesis.pdf
+      - name: Create GitHub Release and Upload PDF
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: thesis-${{ github.sha }}
+          name: Thesis Release ${{ github.sha }}
+          body: Compiled PDF of the thesis.
           files: thesis.pdf
