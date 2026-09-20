@@ -6,18 +6,18 @@
   - [Wikipedia entry for Speculative Decoding](#wikipedia-entry-for-speculative-decoding)
   - [How Speculative Sampling works in general](#how-speculative-sampling-works-in-general)
 - [Model naming conventions](#model-naming-conventions)
-  - [The five-slot decoder](#the-five-slot-decoder)
-  - [Parameter count](#parameter-count)
-  - [Fine-tuning suffixes](#fine-tuning-suffixes)
-  - [Quantization (GGUF / llama.cpp)](#quantization-gguf--llamacpp)
-  - [Other ecosystems](#other-ecosystems)
-  - [Practical takeaways for picking SD pairs](#practical-takeaways-for-picking-sd-pairs)
+    - [Reading a filename](#reading-a-filename)
+    - [Parameter count](#parameter-count)
+    - [Fine-tuning suffixes](#fine-tuning-suffixes)
+    - [Quantization (GGUF / llama.cpp)](#quantization-gguf--llamacpp)
+    - [Other ecosystems](#other-ecosystems)
+    - [Picking SD pairs](#picking-sd-pairs)
 - [Quantization](#quantization)
   - [What it is](#what-it-is)
   - [Why we do it - memory bandwidth is the bottleneck](#why-we-do-it--memory-bandwidth-is-the-bottleneck)
   - [Does it hurt quality?](#does-it-hurt-quality)
   - [Do other inference engines use it?](#do-other-inference-engines-use-it)
-  - [Pareto-frontier tool, not a necessary evil](#pareto-frontier-tool-not-a-necessary-evil)
+  - [How far to push it](#how-far-to-push-it)
   - [How quantization interacts with speculative decoding](#how-quantization-interacts-with-speculative-decoding)
 - [Concrete Directions](#concrete-directions)
   - [Adaptive Draft Length for llama.cpp](#adaptive-draft-length-for-llamacpp)
@@ -47,16 +47,16 @@
   - [Profile-Guided Optimization for Speculative Decoding](#profile-guided-optimization-for-speculative-decoding)
 - [Trace-Based Speculation](#trace-based-speculation)
   - [Lightweight JIT for token prediction that runs alongside the draft model](#lightweight-jit-for-token-prediction-that-runs-alongside-the-draft-model)
-- [A Comprehensive Analysis of SD Implementations and Techniques](#a-comprehensive-analysis-of-sd-implementations-and-techniques)
+- [Implementations](#implementations)
 - [Quality Evaluation](#quality-evaluation)
-  - [Why naive perplexity is a trap](#why-naive-perplexity-is-a-trap)
+  - [PPL of two samples is not a comparison](#ppl-of-two-samples-is-not-a-comparison)
   - [The acceptance rule and why it preserves the distribution](#the-acceptance-rule-and-why-it-preserves-the-distribution)
   - [The TV-distance bound on acceptance](#the-tv-distance-bound-on-acceptance)
   - [Perplexity as a sanity check](#perplexity-as-a-sanity-check)
-  - [Empirical metrics we actually report](#empirical-metrics-we-actually-report)
+  - [Metrics](#metrics)
   - [Data convention](#data-convention)
   - [How the literature evaluates "quality is preserved"](#how-the-literature-evaluates-quality-is-preserved)
-  - [When perplexity becomes a real lever (lossy variants)](#when-perplexity-becomes-a-real-lever-lossy-variants)
+  - [When PPL actually matters (lossy variants)](#when-ppl-actually-matters-lossy-variants)
 - [Resources](#resources)
 - [Footnote](#footnote)
 <!--toc:end-->
@@ -68,16 +68,14 @@
 > 
 > Ιδιαίτερη έμφαση θα δοθεί (α) στην επιλογή των κατάλληλων μοντέλων και (β) στην επίδρασή τους στην ακρίβεια και στην αποδοτικότητα των αποτελεσμάτων.
 
-> This research addresses the inference scheduling problem, drawing from compiler optimization theory (e.g., branch prediction, profile-guided optimization, instruction scheduling) to minimize both latency and energy usage.
-> 
-> These parallels arise from the fact that LLM inference can be viewed as a computational pipeline, similar to how compilers treat code as a sequence or graph to optimize ([Abstract Syntax Tree](https://en.wikipedia.org/wiki/abstract_syntax_tree)).
-> 
-> Previous research shows speedups of 2-3x from speculative decoding alone, and layering compiler-inspired optimizations could yield even greater improvements, especially for edge cases like long sequences or low-acceptance-rate drafts.
+> Inference scheduling problem. Compilers already have language for this: branch prediction, PGO, instruction scheduling. LLM decode is a pipeline; an AST is a pipeline too ([Abstract Syntax Tree](https://en.wikipedia.org/wiki/abstract_syntax_tree)).
+>
+> Speculative decoding by itself is 2-3x in the papers. Adaptive k / tree drafts / CPU-GPU split might help on long sequences or when the draft is often wrong. Might not. That's the experiment.
 
-* Speculative decoding provides speedups when the draft model is fast and accurate enough that most speculative tokens are accepted. 
-* On GPU this works well because the cost of evaluating multiple tokens in parallel is low.
-* On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
-* Speculative decoding essentially in LLMs **is** speculative execution in CPUs.
+* SD pays off when the draft is cheap and most of its tokens get accepted.
+* GPU: verifying several tokens in one pass is cheap, so this works.
+* CPU: drafting itself is expensive, and tiny logit mismatches reject a lot.
+* Speculative decoding in LLMs is speculative execution in CPUs.
 
 ### Wikipedia entry for Speculative Decoding
 > [!TIP]
@@ -90,49 +88,44 @@
 * The key factor in speculative decoding is that a transformer decoder can verify faster than it can decode, in the following sense.
 
 ### How Speculative Sampling works in general
-*from: [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](#resources-reward-guided-speculative-decoding-for-efficient-llm-reasoning)*
+from: [Reward-Guided Speculative Decoding for Efficient LLM Reasoning](#resources-reward-guided-speculative-decoding-for-efficient-llm-reasoning)
 > The smaller model serves as a guide, proposing the overall sequences that the larger model can confirm or adjust, leading to faster inference without compromising quality.
 
-Speculative sampling is GPU-optimized, where:
-* draft model runs on tensor cores
-* target model runs on tensor cores
-* parallel kernels overlap efficiently
-* memory bandwidth is massive
+On GPU this is a good fit:
+* draft on tensor cores
+* target on tensor cores
+* kernels overlap
+* bandwidth is huge
 
-Speculative sampling only helps if:
-* Draft model is much faster per token than target
-* Hardware can evaluate both models in parallel efficiently
-* Draft acceptance rate is high enough (ideally >60%)
+Doesn't help unless:
+* draft is much cheaper per token than the target
+* running both doesn't eat the savings
+* acceptance is high enough (ballpark >60%)
 
-In simple terms:
-* The small model proposes several next tokens (a "draft" sequence).
-* The large model verifies them in parallel.
-* If the proposals are likely under the large model, they are accepted, saving time because the large model doesn't need to compute them token-by-token
+What actually happens:
+* Small model proposes a few next tokens (the draft).
+* Large model scores them in one pass.
+* Keep a proposal if it's likely under the large model. That's the speedup: the large model didn't decode those tokens one by one.
+* Leviathan rule: if p_target ≥ p_draft, accept (doesn't change the target's distribution). If lower, accept with probability p/q. A miss wastes the draft work. Good draft → faster, same output. Bad draft → slower than AR. See: [Branch predictor](https://en.wikipedia.org/wiki/Branch_predictor)
+* Some papers exit early when the model is confident. Loose analogue of skipping work in a compiler.
+* Tree drafts: several paths instead of one sequence, prune the rest. Not in spectre (parked).
+* "Schedule the high-probability path first" is the OOO analogy. Also not this month.
 
-In other words:
-* The small LLM generates a series of sequential tokens, after which the large LLM evaluates all of these in a single pass.
-* For each token, if the probability in the large LLM is higher than that of the small one, it is accepted directly (therefore not affecting the large LLM's statistics). If the probability is lower, the likelihood of acceptance is proportional to the difference in probabilities. This method makes it likely that the token will not be accepted, in which case the computation is wasted. If the small model performs well, we gain a speedup without changing the output, but if it performs poorly, we waste significant compute resources, slowing down the process. See: [Branch predictor](https://en.wikipedia.org/wiki/Branch_predictor)
-* Speculative decoding variants allow tokens to exit the model early if the model is confident, similar to compiler optimizations like function inlining or dead code elimination, which skip unnecessary computations.
-* Speculative sampling often builds a tree of possible token paths during text generation. We can apply compiler-style graph transformations (e.g., pruning redundant branches via static analysis or common sub expression elimination on token probabilities) to optimize the tree exploration.
-* Just as compilers schedule operations for parallel execution, speculative sampling could "schedule" token generation to prioritize high-probability paths, inspired by compiler techniques for out-of-order execution.
-
-These are soft-max probabilities over the vocabulary, the same kind of probabilities used during standard next-token sampling in an LLM.
+Softmax over the vocab. Same probabilities used in normal decoding.
 
 ## Model naming conventions
 
-A reference for reading model filenames in the wild. Filenames like
-`Qwen3-30B-A3B-Instruct-Q4_K_M.gguf` compress 4-5 orthogonal things into one
-string; this section decodes each slot.
+How to read a filename like Qwen3-30B-A3B-Instruct-Q4_K_M.gguf. Four or five unrelated things jammed into one string.
 
-### The five-slot decoder
+### Reading a filename
 
 | Slot | Example | What it means |
 |---|---|---|
-| Family / version | `Qwen3` | Model family and major version |
-| **Size** | `30B-A3B` | **Parameter counts** (see below) |
-| Fine-tuning | `Instruct` | Training objective |
-| **Quantization** | `Q4_K_M` | **How weights are stored** (see below) |
-| Format | `.gguf` | File format (here, llama.cpp's GGUF) |
+| Family / version | Qwen3 | Model family and major version |
+| Size | 30B-A3B | Parameter counts (see below) |
+| Fine-tuning | Instruct | Training objective |
+| Quantization | Q4_K_M | How weights are stored (see below) |
+| Format | .gguf | File format (here, llama.cpp's GGUF) |
 
 Decoding the local models in this repo:
 
@@ -146,12 +139,12 @@ Nemotron-3-Nano-4B-BF16.gguf
 fam      v size size precision (no quant - full bf16)
 ```
 
-`Nano` here is NVIDIA's size-class label (Nano < Mini < Small < Medium < Large)
+Nano here is NVIDIA's size-class label (Nano < Mini < Small < Medium < Large)
 rather than a separate slot.
 
 ### Parameter count
 
-**Dense models** (the simple case):
+Dense models (the simple case):
 
 ```
 8B    = 8 billion parameters, every one used per token
@@ -159,9 +152,9 @@ rather than a separate slot.
 1.5B  = 1.5 billion parameters
 ```
 
-Memory ≈ `params × bytes_per_param`. A 70B model at FP16 is ~140 GB.
+Memory ≈ params × bytes_per_param. A 70B model at FP16 is ~140 GB.
 
-**MoE models - the `XB-AYB` form.** `X` is total, `A` is active per token:
+MoE models - the XB-AYB form. X is total, A is active per token:
 
 ```
 30B-A3B            = 30 B total parameters, ~3 B active per token
@@ -170,21 +163,16 @@ DeepSeek-V3 671B-A37B = 671 B total, 37 B active
 ```
 
 A Mixture-of-Experts layer holds N small "expert" sub-networks plus a router.
-The router picks the top-k experts per token, and only those experts run. So
-you pay **memory** for all 30 B parameters but **compute** only for ~3 B per token.
+The router picks the top-k experts per token, and only those experts run.
+Memory is paid for all 30 B parameters; compute is only ~3 B per token.
 
-Why this matters for the thesis:
+Why this shows up in the thesis:
 
-- **Throughput is bound by active params**, not total. A 30B-A3B model decodes
-  nearly as fast as a dense 3B model when everything fits in VRAM.
-- **Speculative-decoding economics change.** The target/draft size ratio that
-  gives a good speedup is usually `draft ≈ target / 10..20`. For MoE,
-  compare *active* params, not totals. A `30B-A3B` target effectively asks a
-  3B draft to keep up - harder than drafting for a dense 30B model.
-- **Memory pressure is still high.** You need ~30 B worth of VRAM regardless,
-  unless you use expert offloading.
+- Throughput tracks active params, not total. A 30B-A3B that fits in VRAM decodes closer to a dense 3B than to a dense 30B.
+- SD ratios should use active params. Usual rule of thumb is draft ≈ target / 10..20. A 30B-A3B target is asking a 3B draft to keep up, which is harder than drafting for a dense 30B.
+- Memory is still needed for all 30B unless experts are offloaded.
 
-Real MoE models you'll encounter:
+MoE models that show up a lot:
 
 | Model | Total | Active | Notes |
 |---|---:|---:|---|
@@ -198,21 +186,21 @@ Real MoE models you'll encounter:
 
 | Suffix | Meaning |
 |---|---|
-| (none) or `-Base` | Pretrained on text completion only - no instruction following |
-| `-Instruct` | SFT'd on instruction-following pairs |
-| `-Chat` | Same idea, often with multi-turn formatting |
-| `-Coder` | Continued pre-training on code |
-| `-Math`, `-Reasoning`, `-Thinking` | Specialized variants |
-| `-DPO`, `-RLHF`, `-RLAIF` | Indicates the preference-training method used |
-| `-it` | Some labs use `-it` for "instruction-tuned" (Gemma) |
+| (none) or -Base | Pretrained on text completion only - no instruction following |
+| -Instruct | SFT'd on instruction-following pairs |
+| -Chat | Same idea, often with multi-turn formatting |
+| -Coder | Continued pre-training on code |
+| -Math, -Reasoning, -Thinking | Specialized variants |
+| -DPO, -RLHF, -RLAIF | Indicates the preference-training method used |
+| -it | Some labs use -it for "instruction-tuned" (Gemma) |
 
-For SD experiments, **the draft and target should share fine-tuning style** -
-pair `-Instruct` with `-Instruct`. Mixing base with chat models lowers
-acceptance rates because their distributions on chat-formatted input diverge.
+For SD, draft and target should be the same kind of fine-tune.
+-Instruct with -Instruct. Mixing a base model with a chat model tanks
+acceptance: same prompt template, different distributions.
 
 ### Quantization (GGUF / llama.cpp)
 
-**Bit-width prefix:**
+Bit-width prefix:
 
 ```
 F32 / F16 / BF16  = full or half precision floats
@@ -223,8 +211,8 @@ IQ4_XS / IQ3_M    = importance-matrix quants (i-quants)
 IQ2_XXS / IQ1_S   = ultra-low-bit (1.5-2.5 bits effective)
 ```
 
-**Suffix tier.** `_S`, `_M`, `_L` after a K-quant means
-**Small / Medium / Large mixed-precision variant**:
+Suffix tier. _S, _M, _L after a K-quant means
+Small / Medium / Large mixed-precision variant:
 
 ```
 Q4_K_S = mostly 4-bit; smallest size, lowest quality
@@ -232,44 +220,41 @@ Q4_K_M = 4-bit with critical layers (attention, output) bumped higher - best-bal
 Q4_K_L = even more critical layers kept higher
 ```
 
-`M` is usually the sweet spot. `S` saves a bit of disk/VRAM at noticeable
-quality loss; `L` is rarely worth it.
+M is the usual pick. S is smaller and worse; L rarely worth it.
 
-**`Q_K` vs `IQ_`:**
+Q_K vs IQ_:
 
-- **`Q_K`** ("K-quants"): groups of weights with shared scale/min values.
-  Fast on most hardware, simple. Released ~mid-2023.
-- **`IQ_`** ("I-quants" / importance-matrix quants): uses a calibration dataset
-  (the "imatrix") to assign *which* weights need more precision.
-  **Same bit budget → higher quality**, slightly slower on some CPUs/GPUs.
+- Q_K (K-quants): groups of weights share a scale/min. Fast, simple. ~mid-2023.
+- IQ_ (I-quants / importance-matrix): calibration set (the "imatrix") decides
+  which weights keep more bits. Same bit budget, usually better quality, a bit
+  slower on some hardware.
 
-Rule of thumb: at 4 bits and below prefer `IQ` when available;
-at 5+ bits, `Q_K_M` is fine.
+At 4 bits and below I prefer IQ if it exists. At 5+ bits Q_K_M is fine.
 
-**Legacy / non-K formats:**
+Legacy / non-K formats:
 
 ```
 Q4_0, Q4_1, Q5_0, Q5_1   = older single-precision-per-block formats
 Q8_0                      = 8-bit, used as the high-fidelity reference; "essentially lossless"
 ```
 
-`Q8_0` deserves a callout: it's effectively a lossless 50% size reduction from
-FP16. **Almost always the right choice for a draft model** - fast, tiny, and the
-draft's slight quality loss doesn't matter because the target verifies everything.
+Q8_0 is worth remembering: half the size of FP16, effectively lossless.
+Usually the right draft quant. Fast, small, and any quality drop is the
+target's problem because the target verifies.
 
 ### Other ecosystems
 
 | Format | Where |
 |---|---|
-| `GPTQ` | HuggingFace, AutoGPTQ, ExLlama - GPU-focused 4-bit |
-| `AWQ` | activation-aware quantization, GPU |
-| `EXL2` | ExLlamaV2; per-layer mixed bit-width |
-| `MLX` | Apple Silicon |
-| `safetensors` (uncompressed) | the FP16/BF16 source weights from HF |
+| GPTQ | HuggingFace, AutoGPTQ, ExLlama - GPU-focused 4-bit |
+| AWQ | activation-aware quantization, GPU |
+| EXL2 | ExLlamaV2; per-layer mixed bit-width |
+| MLX | Apple Silicon |
+| safetensors (uncompressed) | the FP16/BF16 source weights from HF |
 
-For llama.cpp work, only `GGUF` + the `Q_K`/`IQ` family is relevant.
+For llama.cpp work, only GGUF + the Q_K/IQ family is relevant.
 
-You'll occasionally see context-related extras in filenames:
+Filenames sometimes also carry:
 
 ```
 -128k      context window in tokens (e.g. Qwen2.5-Coder-7B-Instruct-128k)
@@ -278,43 +263,35 @@ You'll occasionally see context-related extras in filenames:
 -Function  fine-tuned for tool-use / function calling
 ```
 
-### Practical takeaways for picking SD pairs
+### Picking SD pairs
 
-Three things determine speculative-decoding efficiency:
+What actually moves SD:
 
-1. **Same family + same fine-tune.** Vocabulary and distribution must match;
-   the spectre binary checks vocab equivalence at startup.
-2. **Active-param ratio.** Aim for `draft active ≈ target active ÷ 8..20`.
-   - For dense `26B`: draft 1.5B-3B.
-   - For MoE `30B-A3B`: ideal draft is 0.2B-0.4B (rarely available) - which is
-     why **SD on MoE is harder, not easier**.
-3. **Quant pair.** Target `Q5_K_M` or higher (don't waste verification budget
-   on a noisy target); draft `Q4_K_M` or `Q8_0`.
+1. Same family, same fine-tune. Vocab has to match. spectre checks this at startup.
+2. Active-param ratio. Aim for draft active ≈ target active ÷ 8..20.
+   - Dense 26B: draft 1.5B-3B.
+   - MoE 30B-A3B: the ideal draft is 0.2B-0.4B, which almost never exists. So SD on MoE is harder, not easier.
+3. Quant pair. Target Q5_K_M or higher (a noisy target wastes the verification). Draft Q4_K_M or Q8_0.
 
-The Nemotron BF16 (target) + Nemotron Q8_0 (draft) pair used in this repo is a
-**self-speculative decoding** setup: same model, different precisions. The Q8
-version is ~50% faster to evaluate but produces nearly identical distributions,
-so acceptance is very high. It's a useful baseline but not what most papers do
-(they use a separately-trained smaller model).
+The Nemotron BF16 (target) + Nemotron Q8_0 (draft) pair in this repo is
+self-speculation: same model, two precisions. Q8 is ~50% faster to evaluate
+and close enough that acceptance is high. Useful baseline. Not what most
+papers do (they train a smaller draft).
 
 ## Quantization
 
-The "Q4_K_M / IQ2_M / BF16" suffixes in model filenames are *quantization
-formats*; this section explains what quantization actually does and why it
-matters for the speculative-decoding story.
-
-Quantization and Speculative Decoding both attack the same bottleneck (memory bandwidth) from different angles.
+The Q4_K_M / IQ2_M / BF16 bits in filenames. Quantization and SD both
+try to spend less time waiting on memory. Quantization: smaller weights. SD:
+fewer target weight-reads per output token.
 
 ### What it is
 
-**Storing each weight in fewer bits than the precision it was trained at.**
+Store each weight in fewer bits than it was trained at.
 
-Models are trained in `float32` (32 bits = 4 bytes per weight) or, more often
-today, `bfloat16` (16 bits = 2 bytes). Quantization converts those weights
-into a lower-bit representation - typically 8, 4, or even 2 bits - at the cost
-of some precision loss.
+Training is usually float32 (4 bytes) or bfloat16 (2 bytes). Quantization
+packs that into 8, 4, sometimes 2 bits. Some precision is lost.
 
-The simplest scheme (uniform integer quantization):
+Simplest scheme (uniform int8):
 
 ```
 original  weight   ∈ [-W_max, +W_max]                   (float, full range)
@@ -322,44 +299,35 @@ quantized weight   = round(weight × (127 / W_max))      → int8 ∈ [-128, +12
 restored  weight   ≈ quantized / (127 / W_max)          (back to float, lossy)
 ```
 
-You store the `int8` value and the scaling factor `W_max/127`. At inference
-time, you decode back to float on the fly to do the matrix multiply.
+Store the int8 and the scale W_max/127. At inference, dequantize on the fly
+for the matmul.
 
-Real quantization is much fancier than this - modern formats (`Q4_K_M`,
-`IQ3_M`, etc.) use:
+Actual formats (Q4_K_M, IQ3_M, ...) do more than that:
 
-- **Block-wise scaling**: each group of ~32 weights gets its own scale, so a
-  few outliers don't blow up the whole tensor.
-- **Mixed precision**: critical layers (attention output projection, embedding)
-  are kept at higher precision than feedforward.
-- **Importance weighting** (the "I" in I-quants): a calibration dataset
-  identifies which weights matter most and assigns them more bits.
+- Block-wise scaling: ~32 weights share a scale, so a few outliers don't wreck the tensor.
+- Mixed precision: attention output / embeddings stay at higher bit-width than FFN.
+- Importance weighting (the "I" in I-quants): a calibration set decides which weights get more bits.
 
-But the core idea is unchanged: trade precision for storage.
+That's it. Fewer bits, smaller file.
 
 ### Why we do it - memory bandwidth is the bottleneck
 
-The widely-quoted reason is "models don't fit in VRAM." That's true but it's
-the symptom, not the cause. The real reason is more important:
+"Doesn't fit in VRAM" is the symptom. Decode is bandwidth-bound. Compute is not.
 
-**LLM inference is memory-bandwidth-bound, not compute-bound.**
-
-When you generate one token from a 7 B model on an A100:
+One token from a 7B model on an A100:
 
 | Operation | Numbers |
 |---|---|
-| Weights you must read from VRAM → cache | ~7 B × 2 bytes = **14 GB** |
-| Math you must perform | ~7 B × 2 = **14 G** FLOPs |
+| Weights read from VRAM -> cache | ~7 B x 2 bytes = 14 GB |
+| Math performed | ~7 B x 2 = 14 G FLOPs |
 | A100 memory bandwidth | ~2 TB/s |
 | A100 compute throughput (FP16) | ~312 TFLOP/s |
-| Time spent moving weights | 14 GB / 2 TB/s = **7 ms** |
-| Time spent computing | 14 G / 312 T = **0.045 ms** |
+| Time spent moving weights | 14 GB / 2 TB/s = 7 ms |
+| Time spent computing | 14 G / 312 T = 0.045 ms |
 
-The compute finishes in 45 μs. The memory transfer takes 7 ms. **The GPU is
-idle ~99% of the time waiting on memory.** This is the central fact of LLM
-inference, and it dictates everything downstream.
+Compute: 45 μs. Memory: 7 ms. The GPU is waiting on weights. That's decode.
 
-Now apply quantization to the same 7 B model:
+Same 7B, quantized:
 
 | Quant | Bytes/weight | Read time | Implied tok/s |
 |---|---:|---:|---:|
@@ -367,16 +335,15 @@ Now apply quantization to the same 7 B model:
 | Q8_0 | 1.0 | 3.5 ms | ~286 |
 | Q4_K_M | 0.55 | 1.9 ms | ~526 |
 
-You don't speed up the math - the GPU still computes in higher precision
-internally after dequantizing. You speed up the **memory transfer**, and since
-memory is the bottleneck, you get a near-linear speedup. Q4_K_M is ~3.7× faster
-than F16 simply because each weight is 3.7× smaller.
+This does not speed up the math. After dequant the GPU still computes in
+higher precision. It speeds up the transfer. Since that's the wait,
+tok/s scales almost with bytes/weight. Q4_K_M is ~3.7× vs F16 because the
+weights are ~3.7× smaller.
 
 ### Does it hurt quality?
 
-Yes, but how much depends on how aggressive. The standard way to measure this
-is the perplexity gap between the quantized model and its FP16 reference on a
-held-out corpus. Rough empirical curve (varies by model; the shape is universal):
+Yes. How much depends how far the quant goes. Usual measure: PPL gap vs FP16 on a
+held-out corpus. Rough curve (shape is consistent, numbers move by model):
 
 | Quant | Quality loss vs F16 | Size vs F16 |
 |---|---|---:|
@@ -389,107 +356,84 @@ held-out corpus. Rough empirical curve (varies by model; the shape is universal)
 | Q2_K | ~10-20 % | 19 %  ← starts to matter |
 | IQ1_S | 30-50 %+ | 14 %  ← only useful in extremis |
 
-Above ~4 bits the quality loss is **smaller than what a different random seed
-gives you** on most benchmarks. Below ~3 bits, the loss becomes user-visible
-and chains of reasoning start to break.
+Above ~4 bits the loss is often smaller than changing the seed. Below ~3 bits
+it shows up, and long chains of reasoning start falling apart.
 
-There's also a model-size interaction: **bigger models tolerate quantization
-better.** A 70B at 4 bits often outperforms a 13B at 16 bits in both quality
-and speed and uses similar memory. This is the standard "go bigger, then
-quantize" advice for local inference.
+Bigger models survive this better. A 70B at 4-bit often beats a 13B at 16-bit
+on both quality and speed, at similar memory. That's the local-inference
+advice: go bigger, then quantize.
 
 ### Do other inference engines use it?
 
-Universally. It's table stakes:
+Yes. Everyone:
 
 | Engine | Quantization support |
 |---|---|
-| **llama.cpp / GGUF** | K-quants and I-quants (this thesis) |
-| **vLLM** (Berkeley/UC, dominant server) | AWQ, GPTQ, FP8, INT8 KV cache, FP8 KV cache |
-| **TGI** (HuggingFace) | bitsandbytes (8/4-bit), GPTQ, AWQ, EETQ |
-| **TensorRT-LLM** (NVIDIA, production) | FP8 (heavily), INT8, INT4 weight-only |
-| **ExLlamaV2** | EXL2 - bespoke per-layer mixed bit-width |
-| **MLX** (Apple) | INT4, INT8 quantization for Apple Silicon |
-| **MLC-LLM** (mobile) | INT3, INT4 |
-| **Ollama, LM Studio, Jan** | all wrap llama.cpp |
+| llama.cpp / GGUF | K-quants and I-quants (this thesis) |
+| vLLM (Berkeley/UC, dominant server) | AWQ, GPTQ, FP8, INT8 KV cache, FP8 KV cache |
+| TGI (HuggingFace) | bitsandbytes (8/4-bit), GPTQ, AWQ, EETQ |
+| TensorRT-LLM (NVIDIA, production) | FP8 (heavily), INT8, INT4 weight-only |
+| ExLlamaV2 | EXL2 - bespoke per-layer mixed bit-width |
+| MLX (Apple) | INT4, INT8 quantization for Apple Silicon |
+| MLC-LLM (mobile) | INT3, INT4 |
+| Ollama, LM Studio, Jan | all wrap llama.cpp |
 
-The hosted-API providers (Anthropic, OpenAI, Google, DeepInfra, Together,
-Fireworks…) also quantize internally; "latency-vs-cost tiers" almost certainly
-correspond to different quantization levels of the same backbone.
+Hosted APIs (Anthropic, OpenAI, Google, DeepInfra, Together, Fireworks, ...)
+quantize internally too. Latency/cost tiers are probably different quants of
+the same backbone.
 
-The only place you *don't* see quantization is research training (you train at
-BF16/FP16 because gradient noise blows up at lower precision - though FP8
-training is now production-grade at large scale).
+Research training is not quantized. Gradients blow up. (FP8 training
+is a thing now at large scale.)
 
-### Pareto-frontier tool, not a necessary evil
+### How far to push it
 
-The honest framing: it's not "good" or "evil" - it's a Pareto-frontier knob.
-
-- **At the right operating points it's free.** `Q8_0` is a 50 % memory and
-  bandwidth saving for ~0 % quality loss. There is no good reason *not* to use
-  it. `Q6_K` and `Q5_K_M` are nearly the same story.
-- **At aggressive operating points it's a trade.** `Q4_K_M` costs ~1-2 % on
-  standard benchmarks but cuts inference time ~3-4×. For an interactive
-  chatbot wildly worth it; for a medical diagnostic system maybe not.
-- **At extreme operating points it's a necessary evil.** `IQ2`, `IQ1` - you
-  accept measurable quality loss because the alternative is "the model doesn't
-  load." This is what makes a 70 B model run on a 16 GB consumer GPU at all.
-
-Same logic as JPEG vs PNG: nobody calls JPEG "evil" because it's lossy; it's
-just the right answer for most use cases and the wrong answer for some.
+- Q8_0: 50% memory, ~0 quality loss. Worth using. Q6_K / Q5_K_M almost the same.
+- Q4_K_M: ~1-2% on standard benches, ~3-4× faster. Fine for a chatbot. Maybe not if the task is actually high-stakes.
+- IQ2 / IQ1: real quality hit, because otherwise the model doesn't load. This is how a 70B runs on a 16 GB card.
 
 ### How quantization interacts with speculative decoding
 
-Three threads worth pulling on, all relevant to the thesis:
+1. Same bottleneck, different axis. Quant: fewer bytes per weight. SD: fewer
+   target weight-reads per output token (verify N drafts in one pass). They
+   multiply: 4× from Q4 × 2× from SD ≈ 8× vs F16 AR. quality-speed-vs-accept.png
+   is the SD half. The quant sets the baseline those plots sit on.
 
-1. **Quantization and SD attack the same bottleneck from different angles.**
-   Quant reduces *bytes per weight*. SD reduces *token-equivalent weight-reads
-   per output token* - by verifying N drafted tokens in parallel against the
-   target, the target reads its weights once and outputs ≤ N tokens. The two
-   multiply: a 4× speedup from Q4 × a 2× speedup from SD ≈ 8× faster than an
-   F16 AR baseline. `quality-speed-vs-accept.png` measures the SD half; the
-   quant choice sets the baseline against which everything is plotted.
+2. Self-spec (Nemotron BF16 target + Q8 draft) is quant-as-draft. The Q8 is a
+   noisy copy of the target, so acceptance stays high. LayerSkip / self-distillation
+   papers treat this as its own family.
 
-2. **Self-speculative decoding (the Nemotron BF16 + Q8 setup) is essentially
-   quant-as-draft.** The Q8 draft is a "noisy approximation of the target" -
-   exactly the regime where SD shines, because the noise is small enough that
-   acceptance stays high. There's a cluster of recent papers (LayerSkip,
-   SpecDec via Self-Distillation) formalising this as its own SD family.
-
-3. **Quant choice affects acceptance rate even within the same model family.**
-   If target and draft are *both* `Q4_K_M`, the draft is closer to the target
-   than if the target were FP16 - both made the same quantization "errors", so
-   their distributions are more correlated. This is a deliberately exploitable
-   design choice, not a bug.
+3. Quant choice moves acceptance even inside one family. Both at Q4_K_M → more
+   correlated than FP16 target + Q4 draft, because they made similar rounding
+   errors. That's usable, not a bug.
 
 ## Concrete Directions
 ### Adaptive Draft Length for llama.cpp
 
-llama.cpp uses **fixed** `--draft-max` and `--draft-min` parameters. The optimal draft length depends on context difficulty.
-> Easy tokens (boilerplate, code patterns) should draft long, hard tokens (reasoning, rare words) should draft short or not at all.
+llama.cpp uses fixed --draft-max and --draft-min. Optimal k depends on how hard the next tokens are.
+> Easy stuff (boilerplate, code patterns) → draft long. Hard stuff (reasoning, rare words) → draft short or don't.
 
-* Implement an entropy-based or lightweight prediction-head approach (inspired by [SpecDec++](https://arxiv.org/abs/2405.19715) or [AdaEDL](https://proceedings.mlr.press/v262/agrawal24a.html)) directly in llama.cpp's speculative pipeline. AdaEDL is particularly attractive because it's **training-free**
+* Entropy or a small prediction head in llama.cpp's speculative loop. SpecDec++ / AdaEDL. AdaEDL is training-free.
 
-* It uses an entropy-based lower bound on acceptance probability to decide when to stop drafting. This means we don't need to train anything, just instrument the existing draft loop.
+* Entropy lower bound on acceptance → stop drafting. No training, just instrument the draft loop.
 
-* 10-57% improvement over static draft lengths according to the AdaEDL paper.
+* AdaEDL paper: 10-57% over static k.
 
-* This is **profile-guided optimization**, using runtime statistics (token entropy) to make scheduling decisions, exactly like a PGO-enabled compiler uses branch frequency data.
+* This is PGO if profiles are collected offline. AdaEDL itself is an online heuristic, not PGO. Mixing the two in the thesis is a mistake.
 
 ### Tree-Structured Drafting in llama.cpp
 
-llama.cpp currently does **linear** speculative drafting (one sequence of draft tokens). Research shows that **tree-structured** drafting (where you branch at uncertain positions) dramatically improves acceptance rates. [TALON](https://arxiv.org/abs/2601.07353) achieves up to 5.16x speedup by adaptively constructing deep-and-narrow trees for deterministic contexts and shallow-and-wide trees for uncertain ones.
+llama.cpp currently does linear speculative drafting (one sequence). Tree drafts (branch at uncertain positions) raise acceptance. [TALON](https://arxiv.org/abs/2601.07353) claims up to 5.16x with deep-narrow trees on easy context and shallow-wide on uncertain context.
 
-* Implement a basic tree-structured draft in llama.cpp with adaptive branching. The key challenge is implementing **tree attention** for verification efficiently in GGML (llama.cpp's tensor library).
+* Tree draft in llama.cpp with adaptive branching. Hard part: tree attention for verification in GGML.
 
-* This is **speculative execution with branch fan-out**. Instead of predicting one path, we execute multiple paths and discard the wrong ones, just like a superscalar processor.
+* Same idea as speculative execution with fan-out: several paths, retire in order, drop the rest. Parked (see todo.txt).
 
 ### Heterogeneous CPU/GPU Scheduling for Edge
 
-There's a very recent paper (February 2026) ([Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060)) that does exactly what the thesis introduction describes: using compiler-style cost models to partition draft/target model execution across CPU and GPU on edge SoCs. They got 1.68x speedup on ARM Cortex-A + Mali GPU.
+There's a Feb 2026 paper ([Compiler-Assisted Speculative Sampling for Accelerated LLM Inference on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060)) that does the intro pitch: cost model for draft/target on CPU+GPU edge SoCs. 1.68x on ARM Cortex-A + Mali.
 
-* Build an analytical cost model for llama.cpp that decides at runtime whether to use speculative decoding at all, and if so, how to partition work across available compute (CPU threads, GPU if available, even NPU on newer hardware).
-> llama.cpp already supports hybrid CPU/GPU execution via layer offloading -> extend this with speculation-aware scheduling.
+* Cost model for llama.cpp: should we speculate at all, and where (CPU threads, GPU, NPU).
+> llama.cpp already does hybrid CPU/GPU via layer offload. Speculation-aware scheduling would sit on top of that. Out of scope for September.
 
 ### Relative Papers
 
@@ -498,7 +442,7 @@ There's a very recent paper (February 2026) ([Compiler-Assisted Speculative Samp
 - [Compiler-Assisted Speculative Sampling on Heterogeneous Edge Devices](https://arxiv.org/abs/2602.08060)
 - [Efficient Speculative Decoding for Llama at Scale](https://arxiv.org/abs/2508.08192)
 - [Speculative Speculative Decoding (Saguaro)](https://arxiv.org/abs/2603.03251)
-- Eagle-3 Speculative Decoding the SOTA algorithm for speculative decoding
+- Eagle-3, currently the SOTA spec decoder
     - https://github.com/ggml-org/llama.cpp/discussions/15902
     - https://github.com/ggml-org/llama.cpp/pull/18039
     - https://github.com/ggml-org/llama.cpp/pull/18471
@@ -541,11 +485,11 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 > [Source](#resources-a-hitchhikers-guide-to-speculative-decoding)
 
 ### Key takeaways
-1. Speculative decoding : an optimization technique for inference that makes educated guesses about future tokens while generating the current token.
-2. All within a single forward pass. No [backpatching](https://www.geeksforgeeks.org/compiler-design/backpatching-in-compiler-design/)
-3. Based on the premise that the model is powerful enough to predict multiple tokens in a single forward pass.
-4. It incorporates a verification mechanism to ensure the correctness of these speculated tokens
-5. Thereby guaranteeing that the overall output of speculative decoding is identical to that of vanilla decoding.
+1. Guess future tokens while generating the current one
+2. One forward pass. No [backpatching](https://www.geeksforgeeks.org/compiler-design/backpatching-in-compiler-design/)
+3. Assumes the model can predict more than one token per pass
+4. Then verify
+5. Output = vanilla decoding (same distribution)
 
 ## Speculative Sampling Explained
 > [!TIP]
@@ -568,7 +512,7 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
     - using speculative execution and a novel sampling method, we can run large models in parallel on the outputs of the approximation models and thus generate several tokens concurrently without changing the distribution
 3. A single decode step from large autoregressive models (notably transformers) is significantly slower than a step from their smaller counterpart
 4. Several approaches were developed to make inference from them faster.
-    - Reduce the inference cost for *all* inputs equally
+    - Reduce the inference cost for all inputs equally
     - Adaptive Computation Method --> not all inference steps are equal, use the large models where it makes sense
 5. Some inference steps are "harder" and some are "easier"
 6. Inference from large models is often not bottlenecked on arithmetic operations, but rather on memory bandwidth and communication --> thus additional computation resources might be available
@@ -585,14 +529,11 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 2. Unbiasedness maintains theoretical fidelity but often reduces efficiency (especially when the draft diverges from the target)
 3. Allowing controlled bias (where the final distribution deviates slightly from the large model) can improve performance
 4. If a draft token is correct but does not match the large model's distribution exactly, strict rejection is counterproductive.
-5. Reward-guided acceptance:
-    * retains valuable partial solutions,
-    * reduces unnecessary queries,
-    * can even surpass the large model's performance
+5. Reward-guided acceptance: keep partial solutions, fewer target calls, sometimes beats the large model on the task.
 
 ### Reward-Guided Speculative Decoding (RSD)
-- Balances efficiency and accuracy by integrating computationally lightweight "draft" evaluations with reward-driven refinements from a more capable "target" model
-- Adaptively select high-value draft outputs rather than discarding mismatched tokens outright
+- Cheap draft evals + reward from the target
+- Keep high-value drafts instead of dumping them on mismatch
 
 ## Speculative Speculative Decoding (SSD)
 > [!TIP]
@@ -602,7 +543,7 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 > [Source](#resources-speculative-speculative-decoding)
 
 ### Key takeaways
-1. While a verification is ongoing, the draft model *predicts* likely verification outcomes and prepares speculations pre-emptively for them.
+1. While a verification is ongoing, the draft model predicts likely verification outcomes and prepares speculations pre-emptively for them.
 2. If the actual verification outcome is then in the predicted set, a speculation can be returned immediately, eliminating drafting overhead entirely.
 3. The result is SAGUARO, an optimized SSD algorithm.
 
@@ -630,11 +571,10 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
 
 2. AdaEDL, SpecDec++ don't use PGO, they use online heuristics.
 
-> **This is not machine learning.**
+> This is not machine learning.
 >
-> We are not training a neural network. We are collecting execution profiles and using them to parameterize a policy
->
-> Exactly what GCC's `-fprofile-generate` / `-fprofile-use` does. It's a compiler technique applied to a new domain.
+> Not training a network. Collecting execution profiles and using them to set a policy.
+> Same job as GCC -fprofile-generate / -fprofile-use, different domain.
 
 1. Instrumentation
     * Run the draft+target model pair on representative inputs. At each speculative step, log:
@@ -643,45 +583,40 @@ We show that the expected acceptance rate of draft tokens is sufficient to offse
         - The context features (token type, position in sequence, preceding pattern)
 
 2. Profile analysis
-    * From the collected data:
-        - build a lightweight predictor that maps context features to expected acceptance probability.
-    * This is analogous to a compiler's branch prediction profile (at this call site, the branch is taken 94% of the time)
+    * From the collected data, a cheap predictor: context features → expected acceptance.
+    * Same role as a compiler branch profile ("this call site is taken 94% of the time")
 
-3. Optimized policy generation
-    * Use the profile to generate a speculation policy:
-        - High expected acceptance → draft long (like a predicted-taken branch)
-        - Low expected acceptance → draft short or skip (like a predicted-not-taken branch)
-        - Very uncertain → branch (tree-structured draft, like a superscalar processor exploring both paths)
+3. Policy
+    * High expected acceptance → draft long
+    * Low → draft short or skip
+    * Very uncertain → tree (fan-out). Parked.
 
 ## Trace-Based Speculation
 ### Lightweight JIT for token prediction that runs alongside the draft model
 
-> **trace-based compilation for speculative decoding.**
+> trace-based compilation, but for tokens.
 
-In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequently executed paths through the program) and compiles them to optimized native code. Cold paths fall back to the interpreter.
+LuaJIT / V8 / PyPy: record hot paths, compile those, interpreter for the rest.
 
-1. Apply this to speculative decoding:
-    * Record frequently occurring token generation patterns (e.g., "after generating `def`, the next tokens are almost always `function_name(args):`")
-    * For these "hot traces," use aggressive speculation (long drafts, high confidence)
-    * For "cold" / unfamiliar patterns, fall back to conservative speculation or no speculation
-    * The "traces" could be stored as n-gram patterns, trie structures, or even finite automata
+Same idea here:
+    * After def, the next tokens are almost always name(args): that's a hot trace
+    * Hot → long drafts
+    * Cold / unfamiliar → short draft or AR
+    * Store traces as n-grams, a trie, whatever. This is basically the n-gram drafter with extra steps.
 
-## A Comprehensive Analysis of SD Implementations and Techniques
-* Speculative decoding is an inference-time optimization method to accelerate token decoding.
+## Implementations
+* Speculative decoding: generate draft tokens cheaply, verify them with the target in one batch. Speedup if the draft is usually right.
 
-* It does that by generating draft tokens quickly and then verifying them with the target model in a single batch, this approach can achieve substantial speedups when the draft predictions are frequently correct.
+* GPU: parallel verify is cheap, so this works.
+* CPU: drafting is expensive and small logit diffs reject a lot.
 
-* Provides speedups when the draft model is fast and accurate enough that most speculative tokens are accepted. 
-* On GPU this works well because the cost of evaluating multiple tokens in parallel is low.
-* On CPU, draft evaluation is expensive and small differences between model logits cause many rejections.
+* Families (a draft-model method can be mixed with a no-draft-model method)
+    * Draft model (most common)
+    * n-gram {Cache, Map, Mod} - pattern match on the prompt / previous output
+    * EAGLE-{1,2,3} - extra module on the target's internals, currently the fastest
+    * Speculative Speculative Decoding - while verify is in flight, the draft predicts likely outcomes and pre-prepares the next speculation. Saguaro.
 
-* Several implementations (Note: an implementation with draft model can be mixed with an implementation without draft model)
-    * Draft Model (most popular)
-    * n-gram {Cache, Map, Mod} (uses pattern matching to guess future tokens based on the prompt or previous output)
-    * EAGLE-{1,2,3} (the fastest, attaches a separate module to the target model's internal layers)
-    * Speculative Speculative Decoding (the SOTA algorithm, while a verification is ongoing, the draft model predicts likely verification outcomes and prepares speculations pre-emptively for them)
-
-* High level overview of my implementation
+* What spectre actually does
     * start()
         * initialize();
             * initialize libllama backend
@@ -792,21 +727,21 @@ In JIT compilers (LuaJIT, V8, PyPy), the runtime records "hot traces" (frequentl
 
 > [!TIP]
 >
-> How do we know that the text speculative decoding produces is "as good as" what the target model would have produced on its own?
-> Short answer for vanilla SD: by construction, it is *identical in distribution*. Long answer below.
+> How do we know SD text is "as good as" what the target would have written alone?
+> Vanilla SD: identical in distribution, by construction. Details below.
 
-### Why naive perplexity is a trap
+### PPL of two samples is not a comparison
 
-The first instinct is: "run target alone, run SD, compute perplexity of each output, compare." This is wrong for two reasons:
+First idea: run target alone, run SD, compare PPL of the two texts. Skip that.
 
-1. **They sample different sequences.** Perplexity of a *generated* sequence under the model that generated it is a self-evaluation, not a comparison. Two different valid completions of the same prompt can have very different per-token perplexities and both be high-quality.
-2. **For vanilla SD the comparison is theoretically vacuous.** The output of correct SD is a *sample* from the target - exactly. So `PPL(SD output | target)` and `PPL(target output | target)` have the same distribution. Reporting "they match" doesn't prove much; reporting "they differ" proves your SD implementation is buggy.
+1. They sample different sequences. PPL of a generated sequence under the model that generated it is self-evaluation. Two valid completions of the same prompt can have very different per-token PPL and both be fine.
+2. For vanilla SD the comparison is empty. Correct SD is a sample from the target. PPL(SD | target) and PPL(AR | target) have the same distribution. "They match" proves nothing. "They differ" means the implementation is wrong.
 
-So perplexity is useful here as a **sanity check** (the implementation is correct) and as a **drift metric** (for lossy variants), not as a quality comparison between losslessly-equivalent algorithms.
+So: PPL as a sanity check (did I implement acceptance correctly) and as a drift metric (lossy variants). Not as a quality bake-off between two lossless algorithms.
 
 ### The acceptance rule and why it preserves the distribution
 
-Let `p(x | ctx)` be the target distribution and `q(x | ctx)` the draft distribution at the current position. Draft proposes `x ~ q`. Speculative sampling accepts `x` with probability
+Let p(x | ctx) be the target distribution and q(x | ctx) the draft distribution at the current position. Draft proposes x ~ q. Speculative sampling accepts x with probability
 
 ```
 α(x) = min(1, p(x) / q(x))
@@ -818,18 +753,18 @@ and, if rejected, resamples from the residual distribution
 p̃(x) ∝ max(0, p(x) − q(x))     (normalized so it sums to 1)
 ```
 
-**Theorem** (Leviathan et al. 2022; Chen et al. 2023): the marginal distribution of the accepted token equals `p(·|ctx)` exactly.
+Theorem (Leviathan et al. 2022; Chen et al. 2023): the accepted token is distributed as p(·|ctx). Exactly.
 
-*Proof sketch.* Mass on a particular token `x*` after one step:
-- accepted from draft: `q(x*) · min(1, p(x*)/q(x*)) = min(q(x*), p(x*))`
-- contributed via residual after rejection: `P(reject) · p̃(x*)` where `P(reject) = 1 − Σₓ min(p(x), q(x))` and `p̃(x*) = max(0, p(x*) − q(x*)) / P(reject)`
-- sum: `min(p(x*), q(x*)) + max(0, p(x*) − q(x*)) = p(x*)`.  ∎
+Proof sketch. Mass on a particular token x* after one step:
+- accepted from draft: q(x*) * min(1, p(x*)/q(x*)) = min(q(x*), p(x*))
+- residual after rejection: P(reject) * p_res(x*) where P(reject) = 1 - sum min(p(x), q(x)) and p_res(x*) = max(0, p(x*) - q(x*)) / P(reject)
+- sum: min(p(x*), q(x*)) + max(0, p(x*) - q(x*)) = p(x*).
 
-Implication: **the output text from vanilla SD is statistically indistinguishable from target-only sampling.** Any "is the draft bonkers" question collapses to "is your implementation correct."
+So vanilla SD output is statistically the same as target-only sampling. "Is the draft garbage?" reduces to "is the verifier correct." Spectre's verifier is sampler-agreement, not this p/q rule. Leviathan lives in Chapter 2.
 
 ### The TV-distance bound on acceptance
 
-The *only* dial that affects how much you accept is how close `q` is to `p`. Expected per-token acceptance probability:
+The only dial that affects how much gets accepted is how close q is to p. Expected per-token acceptance probability:
 
 ```
 E[α] = Σₓ q(x) · min(1, p(x)/q(x))
@@ -838,19 +773,19 @@ E[α] = Σₓ q(x) · min(1, p(x)/q(x))
      = 1 − TV(p, q)
 ```
 
-So `TV(p, q)` (total variation distance) is the **theoretical upper bound** on the marginal speedup you can get from any drafter. Equivalent statements with KL: `TV ≤ √(½ KL(p ‖ q))` (Pinsker), so high KL ⇒ low acceptance, but the reverse doesn't hold tightly.
+So TV(p, q) is the upper bound on per-token acceptance. Pinsker: TV ≤ √(½ KL(p ‖ q)), so high KL ⇒ low acceptance. The reverse is weaker.
 
-For our n-gram speculators, `q` is essentially a Dirac delta on the predicted token, so:
-- `TV(p, q) = 1 − p(x_predicted)`
-- Acceptance probability per position = `p(x_predicted)` exactly.
-- Acceptance count over many calls ≈ Bernoulli with parameter `E[p(x_predicted)]`.
+For n-gram speculators, q is basically a Dirac on the predicted token:
+- TV(p, q) = 1 − p(x_predicted)
+- Acceptance at that position = p(x_predicted)
+- Over many calls, A / G ≈ Bernoulli with parameter E[p(x_predicted)]
 
-This is why the empirical `A / G` ratio is a useful summary statistic for n-gram drafting specifically.
+That's why A / G is a decent summary for n-gram drafting specifically.
 
 ### Perplexity as a sanity check
 
-Per-token target probability of accepted tokens is written by `RunRecorder::record_token`
-in `spectre/src/main.cpp`, into `results/spectre/<run-id>/tokens.csv` (schema below).
+Per-token target probability of accepted tokens is written by RunRecorder::record_token
+in spectre/src/main.cpp, into results/spectre/<run-id>/tokens.csv (schema below).
 
 Corpus PPL of a generated sequence:
 
@@ -858,40 +793,40 @@ Corpus PPL of a generated sequence:
 PPL = exp( -mean( log p_target(x_t | x_<t) ) )
 ```
 
-For vanilla SD this should equal (within sampling noise) the PPL of a target-only run
-with the same prompt and seed. Disagreement = a bug in the acceptance code. The new
-`--seed` flag pins the sampler so this comparison is reproducible across runs.
+For vanilla SD this should match (within sampling noise) the PPL of a target-only
+run with the same prompt and seed. If they disagree, the acceptance code is
+wrong. --seed pins the sampler so the comparison is reproducible.
 
-### Empirical metrics we actually report
+### Metrics
 
-Three families, in order of importance:
+What I'll report, in this order:
 
-1. **Speed**
-   - decode throughput `tok/s` (from `eval time` line in llama-server logs)
-   - per-token latency `ms/token`
-   - prefill `tok/s` (mostly invariant to SD, but useful to confirm)
+1. Speed
+   - decode throughput tok/s (from eval time in llama-server logs)
+   - per-token latency ms/token
+   - prefill tok/s (mostly invariant to SD, still useful as a sanity check)
 
-2. **Efficiency** (drafter performance)
-   - `acceptance rate = A / G` where `A` = accepted draft tokens, `G` = generated draft tokens
-   - `block efficiency τ = E[accepted per call]` (Leviathan 2022)
-   - `mean accepted length` per speculative round
-   - per-position acceptance `P(i-th accepted) = p̂ⁱ` under independent-Bernoulli model
+2. Efficiency (is the drafter doing anything)
+   - acceptance rate = A / G (A accepted draft tokens, G generated draft tokens)
+   - block efficiency τ = E[accepted per call] (Leviathan 2022)
+   - mean accepted length per speculative round
+   - per-position acceptance P(i-th accepted) = p̂ⁱ under an independent-Bernoulli model
 
-3. **Quality** (only matters for lossy variants; sanity check for lossless)
-   - per-token `log p_target(accepted)` trace
+3. Quality (only for lossy variants; sanity check for lossless)
+   - per-token log p_target(accepted)
    - corpus PPL of generated text
-   - histogram of `p_target(x)` (where does difficulty hide?)
-   - KL(p ‖ q) per position if both distributions are available
+   - histogram of p_target(x) (where is it hard)
+   - KL(p || q) per position if both distributions are available
 
-Scripts (see `spectre/scripts/README.md` for the full reference):
-- `spectre/scripts/benchmark.sh` sweeps the spectre binary across `(seed × n_max)`
-  configs and writes one `results/spectre/<run-id>/` directory per run.
+Scripts (see spectre/scripts/README.md for the full reference):
+- spectre/scripts/benchmark.sh sweeps the spectre binary across (seed × n_max)
+  configs and writes one results/spectre/<run-id>/ directory per run.
   Default pair is Qwen2.5-1.5B drafting for Qwen2.5-3B (fast smoke). Override with
-  `TGT_MODEL=...gemma-4-26B-A4B... DFT_MODEL=...gemma-4-E2B... ./spectre/scripts/benchmark.sh`
+  TGT_MODEL=...gemma-4-26B-A4B... DFT_MODEL=...gemma-4-E2B... ./spectre/scripts/benchmark.sh
   for the realistic Gemma showcase.
-- `spectre/scripts/quality_eval.py` reads every `results/spectre/<run-id>/` directory
-  and produces 7 PNGs into `spectre/presentation/png/quality-*.png`.
-- See `spectre/presentation/html/quality.html` for the live HTML view.
+- spectre/scripts/quality_eval.py reads every results/spectre/<run-id>/ directory
+  and produces 7 PNGs into spectre/presentation/png/quality-*.png.
+- spectre/presentation/html/quality.html for the live HTML view.
 
 Reproduce end-to-end:
 ```bash
@@ -901,20 +836,19 @@ python3 spectre/scripts/quality_eval.py      # regenerate figures
 
 ### Data convention
 
-Every invocation of the spectre binary produces a self-contained, reproducible run directory:
+Each spectre run writes:
 
 ```
 results/spectre/<run-id>/
-  meta.json       config snapshot + per-run aggregates + per-round summaries
-  tokens.csv      per-accepted-token observations (one row per accepted token)
+  meta.json       config + totals + per-round summaries
+  tokens.csv      one row per accepted token
 ```
 
-A run-id is auto-generated as `YYYYMMDD-HHMMSS_<mode>_seed<N>` or set explicitly via
-`--run-id`. The run directory is written incrementally - `meta.json` is created at
-startup with `"complete": false` and overwritten at the end with `"complete": true`
-plus totals. `tokens.csv` is flushed per row. Both files survive `SIGTERM` / `SIGINT`.
+Run-id is YYYYMMDD-HHMMSS_<mode>_seed<N> or --run-id. meta.json starts with
+"complete": false and gets rewritten at the end with totals. tokens.csv is
+flushed per row. Both survive SIGTERM / SIGINT.
 
-**`meta.json` schema** (annotated):
+meta.json schema (annotated):
 
 ```jsonc
 {
@@ -950,29 +884,29 @@ plus totals. `tokens.csv` is flushed per row. Both files survive `SIGTERM` / `SI
 }
 ```
 
-`rejected_pos = -1` means all draft tokens in that call matched (the target then
-contributed a bonus sample, counted in `n_bonus_samples`).
+rejected_pos = -1 means all draft tokens in that call matched (the target then
+contributed a bonus sample, counted in n_bonus_samples).
 
-**`tokens.csv` schema:**
+tokens.csv schema:
 
 | column          | type    | meaning |
 |---|---|---|
-| `step`          | int     | global accepted-token index (0-based) |
-| `call`          | int     | speculative call index (0-based); equals `step` in AR mode |
-| `source`        | str     | `"draft"`, `"bonus"`, or `"ar"` |
-| `pos_in_draft`  | int     | 0..k-1 if `source=="draft"`, else -1 |
-| `token_id`      | int     | token id of the accepted token |
-| `p_target`      | float   | target's probability mass on the accepted token |
-| `p_draft`       | float   | draft's probability mass on the same token (empty for `bonus`/`ar`) |
-| `logit`         | float   | target's logit value of the accepted token |
-| `logprob`       | float   | `log p_target` |
+| step          | int     | global accepted-token index (0-based) |
+| call          | int     | speculative call index (0-based); equals step in AR mode |
+| source        | str     | "draft", "bonus", or "ar" |
+| pos_in_draft  | int     | 0..k-1 if source=="draft", else -1 |
+| token_id      | int     | token id of the accepted token |
+| p_target      | float   | target's probability mass on the accepted token |
+| p_draft       | float   | draft's probability mass on the same token (empty for bonus/ar) |
+| logit         | float   | target's logit value of the accepted token |
+| logprob       | float   | log p_target |
 
-Empty `p_draft` cells are NaN. The script `quality_eval.py` handles both empty and NaN.
+Empty p_draft cells are NaN. The script quality_eval.py handles both empty and NaN.
 
-**Reproducibility checklist** for the thesis: prompt is recorded in full, sampler is
-seeded via `--seed`, model paths are absolute, and `started_at` lets you correlate
-with system logs. To regenerate any result: `spectre/build/main --run-id <same> ...`
-will overwrite the directory deterministically.
+Reproducibility for the thesis: full prompt, --seed, absolute model paths,
+started_at to match system logs. To regenerate: spectre/build/spectre --run-id <same> ...
+overwrites the directory. (binary is spectre, not main - benchmark.sh still
+looks for main, that's a todo.)
 
 ### How the literature evaluates "quality is preserved"
 
@@ -981,47 +915,46 @@ will overwrite the directory deterministically.
 | Vanilla SD (lossless) | Leviathan 2022, Chen 2023 | None required; PPL parity as sanity check |
 | Self-speculation / n-gram | llama.cpp ngram_*, our PR #22055 | None required (still uses standard rejection rule) |
 | Tree drafting (lossless) | SpecInfer, EAGLE, TALON | None required; ablations on tree topology |
-| **Soft / lossy acceptance** | Medusa, Lookahead | HumanEval pass@1, MT-Bench, GSM8K, MMLU |
-| **Reward-guided** | RSD (Liao 2025) | MATH, GSM8K, AIME - task-specific |
-| **Quantized draft** | various | Corpus PPL on WikiText-103 / C4 + downstream |
-| **Biased acceptance** (`τ < 1`) | various ablations | KL drift + downstream evals |
+| Soft / lossy acceptance | Medusa, Lookahead | HumanEval pass@1, MT-Bench, GSM8K, MMLU |
+| Reward-guided | RSD (Liao 2025) | MATH, GSM8K, AIME - task-specific |
+| Quantized draft | various | Corpus PPL on WikiText-103 / C4 + downstream |
+| Biased acceptance (τ < 1) | various ablations | KL drift + downstream evals |
 
 Standard datasets when downstream evaluation is required:
-- **Generation quality:** MT-Bench, AlpacaEval, Arena-Hard
-- **Reasoning:** GSM8K, MATH, AIME, MMLU
-- **Code:** HumanEval, MBPP, LiveCodeBench
-- **PPL:** WikiText-103, C4 validation, The Pile validation slice
+- Generation quality: MT-Bench, AlpacaEval, Arena-Hard
+- Reasoning: GSM8K, MATH, AIME, MMLU
+- Code: HumanEval, MBPP, LiveCodeBench
+- PPL: WikiText-103, C4 validation, The Pile validation slice
 
-What papers **don't** typically use for SD evaluation:
-- BLEU / ROUGE / chrF - penalize valid alternative completions; bad fit for sampling.
-- Single-prompt qualitative comparison - anecdotal, not reproducible.
+What papers don't use for SD:
+- BLEU / ROUGE / chrF - they punish valid alternative completions
+- One-prompt qualitative "looks good" - not reproducible
 
-### When perplexity becomes a real lever (lossy variants)
+### When PPL actually matters (lossy variants)
 
-Lossless SD is the boring case (PPL preserved by construction). The interesting frontier is **lossy** variants that deliberately trade exactness for speed:
+Lossless SD is the boring case (PPL preserved by construction). The interesting
+stuff is lossy methods that trade exactness for speed:
 
-1. **Biased acceptance.** Replace `α(x) = min(1, p(x)/q(x))` with `α'(x) = min(1, τ · p(x)/q(x))` for `τ > 1`. Accepts more tokens, drifts away from `p`. The Pareto frontier `speedup × KL(p ‖ p')` is the right thing to plot.
-2. **Medusa-style soft acceptance.** Multiple heads vote; the rejection rule is relaxed. PPL drift vs. speedup is reported in the Medusa paper.
-3. **Reward-guided (RSD).** Replace acceptance criterion with a reward threshold. Can actually *improve* over target on reasoning tasks at the cost of theoretical unbiasedness.
-4. **Aggressive draft quantization** (Q2/Q3 draft of a Q8 target). Increases `TV(p, q)` - quality drift if you keep the acceptance rule strict, or speed gain if you relax it.
+1. Biased acceptance. α(x) = min(1, p(x)/q(x)) → α'(x) = min(1, τ · p(x)/q(x)) with τ > 1. More accepts, drift away from p. Plot speedup against KL(p ‖ p').
+2. Medusa-style soft acceptance. Multiple heads vote, rejection is relaxed. They report PPL drift vs speedup.
+3. Reward-guided (RSD). Acceptance is a reward threshold. Can beat the target on reasoning, at the cost of unbiasedness.
+4. Aggressive draft quant (Q2/Q3 draft of a Q8 target). Raises TV(p, q). Either quality drift (strict rule) or more speed (relaxed rule).
 
-Plausible thesis follow-up: with `p_target` and `p_draft` now in `tokens.csv` per
-accepted token, sweep a bias parameter `τ ∈ [1.0, 2.5]` in the acceptance rule
-and plot the Pareto `extra-speedup` vs `mean |p_target − p_draft|` (TV proxy)
-vs `HumanEval pass@1`. Converts the "lossless / lossy" boolean into a continuous
-design space.
+Possible follow-up: p_target and p_draft are already in tokens.csv. Sweep
+τ ∈ [1.0, 2.5] and plot extra-speedup vs mean |p_target − p_draft| (TV proxy)
+vs HumanEval pass@1. Turns lossless/lossy into a continuous knob. Not September.
 
-Figures produced by `spectre/scripts/quality_eval.py` (run after collecting fresh data):
+Figures produced by spectre/scripts/quality_eval.py (run after collecting fresh data):
 
 | File | What it shows |
 |---|---|
-| `quality-ppl-trace.png` | per-token logprob + cumulative PPL; baseline AR overlay if a complete AR run exists |
-| `quality-target-prob-hist.png` | distribution of `p_target(accepted)` split by source (draft / bonus / ar) |
-| `quality-acceptance-by-run.png` | bar chart of acceptance rate per run |
-| `quality-speed-vs-accept.png` | efficiency frontier (with baseline reference line) |
-| `quality-per-position-empirical.png` | empirical per-position acceptance + Bernoulli model |
-| `quality-draft-vs-target-prob.png` | `p_target` vs `p_draft` scatter on accepted tokens |
-| `quality-rounds-histogram.png` | distribution of accepted-per-call vs. geometric model |
+| quality-ppl-trace.png | per-token logprob + cumulative PPL; baseline AR overlay if a complete AR run exists |
+| quality-target-prob-hist.png | distribution of p_target(accepted) split by source (draft / bonus / ar) |
+| quality-acceptance-by-run.png | bar chart of acceptance rate per run |
+| quality-speed-vs-accept.png | efficiency frontier (with baseline reference line) |
+| quality-per-position-empirical.png | empirical per-position acceptance + Bernoulli model |
+| quality-draft-vs-target-prob.png | p_target vs p_draft scatter on accepted tokens |
+| quality-rounds-histogram.png | distribution of accepted-per-call vs. geometric model |
 
 
 ### n-gram Language Models
@@ -1042,8 +975,8 @@ far into the past
 n-gram --> looks n−1 words into the past
 
 Sampling from a distribution means to choose random points
-according to their likelihood. Thus sampling from a language model—which rep
-resents a distribution over sentences—means to generate some sentences, choosing
+according to their likelihood. Thus sampling from a language model -- which rep
+resents a distribution over sentences -- means to generate some sentences, choosing
 each sentence according to its likelihood as defined by the model.
 
 • Language models offer a way to assign a probability to a sentence or other
@@ -1064,17 +997,18 @@ each sentence according to its likelihood as defined by the model.
   include add-1 smoothing, or rely on lower-order n-gram counts through inter
   polation
 
-• Quantization Pareto (spectre/presentation/png/quant-pareto.png already exists). The point: inference is bandwidth-bound
-  on consumer hardware, so Q4_K/Q5_K is not a "compromise" — it's the optimal operating point. This reframes the
-  model-selection question (requirement a in the brief) from "which architecture" to "which (architecture, quantization)
-  point on the Pareto front."
-• The hybrid-cache framing: speculative decoding is speculative execution; n-gram lookup is branch prediction with a small
-  BTB; the draft model is an L2 cache. Your thesis brief and intro already pitch this — lean into it, because the advisor
-  cannot push back on a framing they don't know.
+• Quantization Pareto (spectre/presentation/png/quant-pareto.png already exists).
+  Bandwidth-bound on this hardware, so Q4_K/Q5_K is the operating point, not a
+  compromise. Model selection is (architecture, quant), not architecture alone.
+• Hybrid-cache metaphor: SD = speculative execution, n-gram = BTB, draft model = L2.
+  The brief already uses this.
 
-on memory-bandwidth-bound consumer hardware, a tiered drafter (n-gram → small model → target verification) recovers most of GPU speculative decoding's speedup while keeping the lossless guarantee. I measure latency, acceptance rate, and energy across (model pair × quantization × draft strategy), and I report a Pareto frontier instead of a single number
+Claim I wanted to make: on bandwidth-bound consumer HW, n-gram → small model →
+target verify should recover most of GPU SD's speedup and stay lossless. Measure
+latency, accept, energy over (pair × quant × strategy). Report a frontier, not
+one number.
 
-Multiple choice / reasoning benchmarks for SD" — those are evaluations of the target model, not of SD
+"Multiple choice / reasoning benchmarks for SD" - those evaluate the target, not SD.
 
 ## Resources
 1. <span id="resources-speculative-sampling"></span> [Speculative Sampling](https://github.com/hemingkx/SpeculativeDecodingPapers)
@@ -1106,7 +1040,7 @@ Multiple choice / reasoning benchmarks for SD" — those are evaluations of the 
 27. <span id="an-introduction-to-speculative-decoding-for-reducing-latency-in-ai-inference"></span>[An Introduction to Speculative Decoding for Reducing Latency in AI Inference](https://developer.nvidia.com/blog/an-introduction-to-speculative-decoding-for-reducing-latency-in-ai-inference/)
 
 ## Footnote
-1. `logit(p) = log(p/(1-p))` is the raw, denormalized predictions generated by a model before applying any activation function
+1. logit(p) = log(p/(1-p)) is the raw, denormalized predictions generated by a model before applying any activation function
 2.
 ```
 Ο Leviathan εγγυάται ότι:
@@ -1125,7 +1059,7 @@ X_{\mathrm{AR}}\sim P_{\mathrm{target}}.
 \operatorname{PPL}(X_{\mathrm{AR}}),
 \]
 
-αλλά δύο ανεξάρτητα παραγόμενα κείμενα μπορούν να έχουν διαφορετικό PPL—όπως δύο ρίψεις του ίδιου δίκαιου νομίσματος δεν
+αλλά δύο ανεξάρτητα παραγόμενα κείμενα μπορούν να έχουν διαφορετικό PPL, όπως δύο ρίψεις του ίδιου δίκαιου νομίσματος δεν
 δίνουν αναγκαστικά το ίδιο αποτέλεσμα.
 ```
 3. 
@@ -1711,3 +1645,4 @@ It retains the matching prefix, and at the first mismatch uses the target’s ch
     so that the model can handle any sequence of characters ever written, including typos,
     made-up words, code, and slurs, without needing an infinitely large dictionary.
 ```
+
