@@ -1,0 +1,20 @@
+%%{init: {
+  "theme": "default",
+  "flowchart": {
+    "useMaxWidth": true,
+    "nodeSpacing": 60,
+    "rankSpacing": 70
+  }
+}}%%
+flowchart TB
+  FW["Next Steps"]
+
+  FW --> AD["Adaptive draft length"]
+  FW --> TR["Tree / multi-branch drafting"]
+  FW --> HT["Heterogeneous execution"]
+  FW --> TS["Trace-driven speculation"]
+
+  AD --> AD1["AdaEDL<br/>SpecDec++<br/>entropy signals"]
+  TR --> TR1["TALON<br/>batched attention cost"]
+  HT --> HT1["CPU / GPU / NPU split<br/>cost models"]
+  TS --> TS1["Hot n-grams<br/>JIT-style specialization"]

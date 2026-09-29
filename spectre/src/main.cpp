@@ -490,7 +490,7 @@ struct InferenceParameters {
   float top_p = 0.90f;
   int32_t top_k = 40;
 
-  uint32_t seed = 1234;
+  uint32_t seed = 1234; // target's seed, draft's seed is seed + 1 to avoid any collisions
 
   /// ================================
   ///  greedy exact-match speculation
@@ -1650,10 +1650,14 @@ private:
       // at each step of text generation, leading to deterministic and generally more focused outputs
       llama_sampler_chain_add(chain, llama_sampler_init_greedy());
     } else {
-      llama_sampler_chain_add(chain, llama_sampler_init_temp(params.temperature));
       llama_sampler_chain_add(chain, llama_sampler_init_top_k(params.top_k));
       llama_sampler_chain_add(chain, llama_sampler_init_top_p(params.top_p, 1));
-      llama_sampler_chain_add(chain, llama_sampler_init_dist(params.seed));
+      llama_sampler_chain_add(chain, llama_sampler_init_temp(params.temperature));
+      if (std::strcmp(llama_sampler_name(chain), "target") == 0) {
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(params.seed));
+      } else {
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(params.seed + 1));
+      }
     }
   }
 
@@ -1663,7 +1667,13 @@ private:
       throw SpectreError("failed to create the sampler_params");
     }
 
-    add_default_sample_chains(sampler_target.get());
+    auto smpl = sampler_target.get();
+
+    smpl->iface->name = []([[maybe_unused]] const struct llama_sampler *smpl) -> const char * {
+      return "target";
+    };
+
+    add_default_sample_chains(smpl);
   }
 
   void init_draft_sampler() {
@@ -1672,7 +1682,13 @@ private:
       throw SpectreError("failed to create draft sampler chain");
     }
 
-    add_default_sample_chains(sampler_draft.get());
+    auto smpl = sampler_draft.get();
+
+    smpl->iface->name = []([[maybe_unused]] const struct llama_sampler *smpl) -> const char * {
+      return "draft";
+    };
+
+    add_default_sample_chains(smpl);
   }
 
   void init_llama_batches() {
@@ -2589,7 +2605,7 @@ private:
     //
     // clean up
     //
-    llama_sampler_reset(sampler_draft.get());
+    // llama_sampler_reset(sampler_draft.get());
 
     last_draft_probabilities.clear();
     last_draft_probabilities.reserve((std::size_t)params.max_tokens_to_draft);
