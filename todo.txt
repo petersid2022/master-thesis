@@ -1,0 +1,257 @@
+# Spectre
+#
+# ============================================================
+# DO THIS NEXT  (move the marker when you tick a box)
+# ============================================================
+#
+#   >>>  7 -> 9, then rerun the campaign and refresh thesis.tex  <<<
+#
+# #8 is green in the current code: greedy AR == spec on token_id.
+# thesis.tex still reports the old campaign where only one speculative run
+# matched AR. Do not carry those stale results into the final thesis.
+# The internship RAG case study is tracked in Phase 8. Retrieval stays outside
+# the speculative verifier; speculative decoding starts after prompt assembly.
+
+# ============================================================
+# PHASE 0 — name the algorithm (English is enough)
+# ============================================================
+
+[x] 0. Name the algorithm in English. Do not write thesis Greek.
+      Paste this somewhere you will see it (notes.md, a // comment, this file):
+        Spectre = sampler-agreement. Target sampler picks a token.
+        Keep a draft token only if it equals that sample.
+        --greedy vs temp/top-p/top-k changes the sampler, not the verifier.
+        Leviathan min(1, p/q) is Chapter 2, not verify_proposal.
+      Done when: those four lines exist in the repo in English.
+      Then immediately start box 1. Do not "translate it properly" tonight.
+
+# ============================================================
+# PHASE 1 — make the engine tell the truth
+# ============================================================
+
+[x] 1. Typed verification result, not vector<llama_token> accepted.
+      Struct with: accepted_drafts, target_token, kind = correction | bonus,
+      rejected_index = optional<size_t> (nullopt = full match).
+      Done when: verify_proposal returns that struct; nothing indexes accepted.back() as three meanings.
+
+[x] 2. Empty proposal is not a bonus.
+      Zero draft tokens + one target sample => kind = correction (or "ar"), never bonus.
+      Done when: a run with n_min huge enough to drop all drafts has n_bonus = 0.
+
+[x] 3. Correction row is two tokens, not one.
+      tokens.csv: kind, token_id, p_target(token_id), rejected_token_id, p_draft(rejected).
+      Never write p_draft of H into the row as if it belonged to emitted X.
+      Done when: a known mismatch round shows X and H as different ids.
+
+[x] 4. optional<size_t> means optional.
+      AR pos_in_draft = nullopt, not -1 (that becomes SIZE_MAX).
+      JSON: rejected_proposal_index is null on full match, integer on reject.
+      quality_eval.py must read rejected_proposal_index (it still looks for rejected_pos).
+      Done when: AR csv has empty/-1 position, JSON null not 18446744073709551615, plots run without KeyError.
+
+[x] 5. Stop double-accept on the draft sampler.
+      llama_sampler_sample already calls accept. Remove the extra llama_sampler_accept in draft_using_draft_model.
+      Done when: that call is gone.
+
+[x] 6. Sampler housekeeping, still no new algorithm.
+      - If --greedy, do not apply temp/top-p/top-k; record greedy=true in meta.json.
+      - Draft dist seed = target seed + 1, both written to meta.json.
+      - Chain order: top-k, top-p, temp, dist (or keep yours and write one sentence why).
+      Done when: a greedy run's meta.json cannot be mistaken for temp=0.8.
+
+[ ] 7. benchmark.sh binary path + GREEDY flag.
+      CMake target is spectre/build/spectre, script looks for spectre/build/main.
+      Add GREEDY=0|1. Do not mix greedy and stochastic in one sweep.
+      Done when: GREEDY=1 ./spectre/scripts/benchmark.sh actually runs.
+
+# ============================================================
+# PHASE 2 — prove it (parity). do not skip. engine work pauses here until green.
+# ============================================================
+
+[x] 8. Greedy parity script.
+      Same prompt, target, n_predict, --greedy.
+      Run AR, model-spec, hybrid. Diff tokens.csv token_id (not printed text).
+      Fail on first mismatch; print round / kind / ids.
+      Matrix: n_max=8, n_max=1, n_min that drops drafts, hybrid --ngram.
+      Done when: all four cases, spec token_id == AR token_id for the full sequence.
+
+[ ] 9. Seeded stochastic parity (same script, drop --greedy, fix --seed).
+      Same assertion. If GPU flakes, rerun on CPU and note it.
+      Done when: seed 42, AR == spec == hybrid on token_id, or you have a written GPU caveat.
+
+# ============================================================
+# PHASE 3 — split generate() only after parity is green
+# ============================================================
+
+[x] 10. Split generate() along the real phases.
+       prefill_target_prefix()
+       run_autoregressive() OR run_speculative()
+       finalize_run()
+       Inside spec: proposal -> verify -> classify -> kv rollback -> record.
+       Rendering stays out of the verifier.
+       Done when: parity script still passes with no token-id change.
+
+# ============================================================
+# PHASE 4 — hybrid as a real treatment
+# ============================================================
+
+[ ] 11. Per-round drafter label in meta.json: ngram | model | none.
+       Stop inferring this from NaN p_draft.
+       Done when: you can count n-gram rounds without reading tokens.csv.
+
+[x] 12. N-gram-only mode (no draft model required).
+       Speculation must run with --ngram and empty --draft-model.
+       Done when: one complete run exists with speculative=true and draft_model_path=null.
+
+[ ] 13. Time the three tiers per round: ngram_us, draft_us, verify_us.
+       Needed before any cache-hierarchy sentence in the thesis.
+       Done when: meta.json rounds include those three numbers.
+
+# ============================================================
+# PHASE 5 — experiments (engine frozen)
+# ============================================================
+
+[ ] 14. Prompt suite + greedy sweep, not one Fibonacci string.
+       Code, JSON/structured, prose. Same n_predict. GREEDY=1. Several seeds.
+       Keep Qwen 1.5B/3B for smoke only.
+       Done when: three prompt files and a results dir you can re-run from a comment in benchmark.sh.
+
+[ ] 15. Static n_max sweep {2,4,8,16}.
+       Report tok/s, not only accept rate. Best k = highest tok/s, not highest accept.
+       Done when: one table, greedy, one model pair, error bars from seeds.
+
+[ ] 16. Showcase pair (Gemma 4 E2B -> 26B-A4B or 31B) on the same protocol as 15.
+       Done when: Chapter 6 can cite a pair where the draft is actually cheap.
+
+# ============================================================
+# PHASE 6 — energy (committed, not optional)
+# Measure the decode window of an engine you already proved equivalent to AR.
+# ============================================================
+
+[ ] 17. Energy on the decode window only.
+       llama_synchronize at both ends. NVML energy or nvidia-smi in a side thread.
+       Write energy_j and j_per_token into meta.json. Warm-up run first.
+       Same output token count as AR (greedy parity already guarantees the same tokens).
+       WSL2: if RAPL/NVML is junk, measure once on native Linux or drop RAPL and keep GPU only.
+       Done when: J/token exists for AR vs spec on one validated machine, with a one-paragraph method.
+
+[ ] 18. Latency–energy slice for Chapter 6.
+       Same greedy matrix as item 15. Report ms/token and J/token. Average watts may go up; J/token should be the brief.
+       Done when: one plot or table with AR, model-spec, hybrid — and you can explain a point that is faster but not cheaper.
+
+[ ] 19. Online early-stop in the draft loop (only after 17, and only if evenings remain).
+       After each draft token, stop if max softmax(draft) < theta. Cap remains n_max.
+       Compare tok/s and J/token to the best static k from item 15. Negative result is allowed.
+       Done when: one plot: static best-k vs adaptive.
+
+# ============================================================
+# PHASE 7 — write, after the corresponding measurements exist
+# ============================================================
+
+[x] 20. Chapter 4 = what Spectre actually does (sampler-agreement, two samplers, hybrid).
+[x] 21. Chapter 5 = parity protocol + benchmark matrix + energy method + what a run directory contains.
+[x] 22. Chapter 2 = only theory Chapters 4–6 use. Leviathan here, not as Spectre's verifier.
+[ ] 23. Chapter 6 = parity, tok/s, accept, n_max, hybrid vs model vs ngram, J/token if 17 landed.
+[ ] 24. Chapters 1, 3, 7 last.
+
+# ============================================================
+# PHASE 7A — make thesis.tex match the current implementation and evidence
+# ============================================================
+
+[ ] 25. Replace the stale failed-parity campaign in thesis.tex.
+       - The abstract and Chapter 6 currently say only one speculative run
+         matched AR, but the current greedy parity test is green.
+       - Finish 6, 7 and 9, then rerun the complete greedy campaign before
+         replacing any table, figure, result, RQ answer or conclusion.
+       - Update schema/terminology: correction vs bonus, optional rejected
+         proposal index, greedy sampler config and target/draft seeds.
+       - Rebuild all generated figures from the same accepted run directory.
+       - Compile the thesis and resolve undefined references, citations and
+         visible TODO markers.
+       Done when: the abstract, Chapters 4--7, tables, figures and appendices
+       all describe the same code revision and the same parity-clean dataset.
+
+# ============================================================
+# PHASE 8 — use case: RAG-based chatbot for internships
+# ============================================================
+#
+# Online path:
+# question -> metadata filters + vector retrieval -> reranking
+#          -> grounded prompt with internship IDs
+#          -> speculative generation -> cited answer
+#
+# Speculative decoding accelerates generation decode. It does not accelerate
+# retrieval, reranking or long-context prefill, so report end-to-end latency
+# as well as decode tok/s.
+
+[ ] 26. Freeze the RAG scope and evaluation corpus.
+       - Store one internship posting per logical document.
+       - Keep stable IDs and metadata: company, role, location, remote status,
+         deadline, required skills, URL and ingestion timestamp.
+       - Apply exact metadata filters before semantic retrieval.
+       - Create representative questions: lookup, comparison, constraints,
+         missing information and multi-turn follow-up.
+       Done when: the corpus and question set are versioned and reproducible.
+
+[ ] 27. Build a target-only RAG baseline before adding speculation.
+       - Embed and index the postings; retrieve top-k and optionally rerank.
+       - Construct a prompt that requires answers only from retrieved records,
+         citations by internship ID and an explicit "not found" response.
+       - Save retrieved IDs, scores and the exact rendered prompt per query.
+       - Use those same saved retrieval results for every decoding treatment.
+       Done when: target-only answers are grounded and citations can be checked.
+
+[ ] 28. Add speculative generation at the serving boundary.
+       - Use llama-server for the interactive chatbot and keep spectre as the
+         instrumented experiment harness.
+       - Load a compatible target/draft pair with the same tokenizer, model
+         family and instruction-tuning style.
+       - Prefill both models with the identical assembled RAG prompt.
+       - Stream only target-verified tokens.
+       Example:
+         llama-server -m TARGET.gguf -md DRAFT.gguf \
+           --spec-type draft-simple --spec-draft-n-min 1 \
+           --spec-draft-n-max 4 -ngl all -ngld all --ctx-size 8192
+       Done when: the chatbot API can switch between AR and draft speculation
+       without changing retrieval or prompt construction.
+
+[ ] 29. Evaluate RAG-aware prompt lookup and hybrid drafting.
+       - n-gram treatment: --spec-type ngram-simple
+       - hybrid treatment: --spec-type ngram-simple,draft-simple
+       - Retrieved passages may make names, dates, skills and URLs copyable,
+         but verify this through acceptance measurements rather than assuming it.
+       - Complete item 12 before claiming n-gram-only support in spectre.
+       Done when: AR, model-only, n-gram-only and hybrid use the same query,
+       retrieved records, rendered prompt and output-token budget.
+
+[ ] 30. Measure both system speed and answer quality.
+       System: retrieval_ms, rerank_ms, prefill_ms, TTFT, decode_ms, tok/s,
+       end-to-end latency, acceptance rate and J/token.
+       RAG: retrieval recall@k on labelled queries, groundedness, answer
+       correctness, citation precision and explicit abstention when unsupported.
+       Use multiple queries and repetitions; report distributions/error bars,
+       not one favourable prompt.
+       Done when: a decode speedup is not presented as an end-to-end speedup
+       unless the complete chatbot request is also faster.
+
+[ ] 31. Add the internship chatbot to thesis.tex as a measured case study.
+       - Add the pipeline and scope to Chapter 5, including the fixed-context
+         comparison protocol and a small architecture figure.
+       - Add results to Chapter 6 only after item 30 has produced data.
+       - Discuss the RAG-specific prompt-lookup hypothesis and prefill caveat.
+       - Update the introduction, contributions, limitations and conclusion
+         without presenting planned implementation as an achieved result.
+       - Keep the current RQs unless the case study materially changes the
+         thesis claim; confirm any RQ change with the supervisor first.
+       Done when: every RAG claim in thesis.tex points to a method, measurement
+       or clearly labelled limitation.
+
+# ============================================================
+# parked — do not start (September is the constraint)
+# ============================================================
+# tree / TALON / EAGLE / DFlash
+# Leviathan p/q verifier
+# hand-written kernels
+# PPL of SD vs AR as a quality metric
+# BLEU / MMLU on lossless SD
+# illustrative quant-pareto.png as a Chapter 6 result (only if you actually sweep GGUFs)
