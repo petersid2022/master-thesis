@@ -560,7 +560,7 @@ enum SpeculationAlgorithm {
   Invalid
 };
 
-static constexpr std::string_view speculation_algorithm_name(SpeculationAlgorithm algorithm) {
+static constexpr std::string_view speculation_algorithm_enum_to_string(const SpeculationAlgorithm algorithm) {
   switch (algorithm) {
   case SpeculationAlgorithm::NgramSimple:
     return "ngram";
@@ -658,7 +658,7 @@ public:
     if (!tokens) {
       throw SpectreError("failed to open {}", (run_dir / "tokens.csv").string());
     }
-    tokens << "step,call,source,pos_in_draft,token_id,p_target,rejected_token_id,p_draft,logit,logprob\n";
+    tokens << "step,call,source,pos_in_draft,token_id,p_target,rejected_token_id,speculative_algorithm,p_draft,logit,logprob\n";
 
     write_metadata(false, /* complete */
                    0,     /* tokens_decoded_count */
@@ -676,6 +676,7 @@ public:
                     int token_id,
                     double p_target,
                     std::optional<int> rejected_token_id,
+                    SpeculationAlgorithm speculative_algorithm,
                     double p_draft,
                     double logit,
                     double logprob) {
@@ -685,6 +686,7 @@ public:
            << token_id << ','
            << fmt_double(p_target) << ','
            << (rejected_token_id.has_value() ? std::to_string(*rejected_token_id) : std::string{}) << ','
+           << speculation_algorithm_enum_to_string(speculative_algorithm) << ','
            << fmt_double(p_draft) << ','
            << fmt_double(logit) << ','
            << fmt_double(logprob) << '\n'
@@ -1277,7 +1279,7 @@ private:
   int tokens_generated_in_round = 0;
   int bonus_tokens_drafted_in_round = 0;
 
-  enum SpeculationAlgorithm algorithm = SpeculationAlgorithm::Invalid;
+  SpeculationAlgorithm algorithm = SpeculationAlgorithm::Invalid;
 
   const bool ds = params.draft_speculative_decoding_is_enabled(); // draft based speculative decoding
   const bool ns = params.ngram_speculative_decoding_is_enabled(); // ngram based speculative decoding
@@ -1323,7 +1325,9 @@ private:
     }
   }
 
-  std::string token_to_string(const struct llama_vocab *vocab, llama_token token, bool special = true,
+  std::string token_to_string(const struct llama_vocab *vocab,
+                              llama_token token,
+                              bool special = true,
                               bool escape_newlines = true) {
     std::string piece;
     piece.resize(piece.capacity());
@@ -1368,7 +1372,7 @@ private:
     if (params.verbose) {
       std::cout << '\n';
       print("round {}  drafter={}  accepted {}/{}",
-            round, speculation_algorithm_name(algo),
+            round, speculation_algorithm_enum_to_string(algo),
             static_cast<int>(accepted.size()),
             static_cast<int>(proposed.size()));
 
@@ -1937,6 +1941,7 @@ private:
                                static_cast<int>(accepted_drafts[i]), /* token_id */
                                prob,                                 /* p_target */
                                std::nullopt,                         /* rejected_token_id */
+                               algorithm,                            /* algorithm */
                                draft_probability,                    /* p_draft */
                                logit,                                /* logit */
                                logprob                               /* logprob */
@@ -2019,6 +2024,7 @@ private:
                                static_cast<int>(target_token), /* token_id */
                                prob,                           /* p_target */
                                rejected_token_id,              /* rejected_token_id */
+                               algorithm,                      /* algorithm */
                                draft_probability,              /* p_draft */
                                logit,                          /* logit */
                                logprob                         /* logprob */
@@ -2081,6 +2087,7 @@ private:
                              static_cast<int>(pending_token),             /* token_id */
                              prob,                                        /* p_target */
                              std::nullopt,                                /* rejected_token_id */
+                             algorithm,                                   /* algorithm */
                              std::numeric_limits<double>::quiet_NaN(),    /* p_draft */
                              logit,                                       /* logit */
                              logprob                                      /* logprob */
