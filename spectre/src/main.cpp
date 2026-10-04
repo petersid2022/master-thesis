@@ -14,7 +14,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <nvml.h>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -24,6 +23,10 @@
 #include <vector>
 
 #include "llama-cpp.h"
+
+#ifdef SPECTRE_HAVE_NVML
+#include <nvml.h>
+#endif
 
 extern int llama_build_number(void);
 extern const char *llama_commit(void);
@@ -42,6 +45,7 @@ public:
       : std::runtime_error(std::format(fmt, std::forward<Args>(args)...)) {}
 };
 
+#ifdef SPECTRE_HAVE_NVML
 class NvmlGpu {
 public:
   enum class Mode { Unavailable,
@@ -234,11 +238,35 @@ private:
 
   friend struct SpectreTests;
 };
+#else
+class NvmlGpu {
+public:
+  bool available() const { return false; }
+  const std::string &name() const { return name_; }
+  const char *source_tag() const { return "nvml:0=unavailable"; }
+  void begin_window() {}
+  void end_window() {}
+  std::optional<double> last_joules() const { return std::nullopt; }
+  std::size_t last_samples() const { return 0; }
+
+private:
+  static std::uint64_t unsigned_delta(std::uint64_t start, std::uint64_t end) {
+    if (end >= start) {
+      return end - start;
+    }
+    return (std::numeric_limits<std::uint64_t>::max() - start) + end + 1;
+  }
+
+  std::string name_;
+
+  friend struct SpectreTests;
+};
+#endif
 
 class InferenceTelemetry {
 public:
   struct Telemetry {
-    struct llama_perf_context_data perf {};
+    struct llama_perf_context_data perf{};
     std::chrono::steady_clock::time_point start_time{};
     std::chrono::steady_clock::time_point end_time{};
 
@@ -519,6 +547,8 @@ struct InferenceParameters {
                        "role, manager, status, created_at, updated_at, is_active, score, notes."
                        "For each property implement a getter and setter using exactly this pattern:"
                        "def get_X(self): return self._X and def set_X(self, value): self._X = value";
+
+  std::string prompt_file;
 
   /// =====================================
   ///  reproducibility / structured output
@@ -806,6 +836,7 @@ private:
     m << "    \"n_predict\": " << p.max_generated_tokens << ",\n";
     m << "    \"prompt_n_chars\": " << p.prompt.size() << ",\n";
     m << "    \"prompt\": \"" << json_escape(p.prompt) << "\"\n";
+    m << "    \"prompt_file\": \"" << p.prompt_file << "\"\n";
     m << "  },\n";
     m << "  \"totals\": {\n";
     m << "    \"n_decoded_tokens\": " << tokens_decoded_count << ",\n";
@@ -970,6 +1001,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --top-k <n>              top-k sampling (default: {})", params.top_k);
   print("  --greedy                 greedy sampler; overrides temp/top-p/top-k (default: {})", params.greedy ? "true" : "false");
   print("  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
+  print("  --prompt-file <path>     initial prompt from file");
   print("");
   print("Speculation (only effective when --draft-model is set):");
   print("  --ngram                  enable n-gram drafter (hybrid: ngram first, draft model on miss) (default: {})", params.ngram);
@@ -1107,6 +1139,13 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
         } else {
           config.print_usage(argv);
           throw SpectreError("Missing argument for n-gpu-layers");
+        }
+      } else if (std::strcmp(argv[i], "--prompt-file") == 0) {
+        if (i + 1 < argc) {
+          params.prompt_file = argv[++i];
+        } else {
+          config.print_usage(argv);
+          throw SpectreError("Missing argument for prompt file");
         }
       } else if (std::strcmp(argv[i], "--prompt") == 0) {
         if (i + 1 < argc) {
@@ -1459,14 +1498,18 @@ private:
   }
 
   void load_draft() {
+    ctx_draft.reset();
+
     model_weights_draft.reset(llama_model_load_from_file(params.draft_model_path.c_str(), default_model_params));
     if (!model_weights_draft) {
       throw SpectreError("failed to load draft model");
     }
 
-    print("draft_llama_model_n_params:    {}", llama_model_n_params(model_weights_draft.get()));
+    auto w = model_weights_draft.get();
 
-    ctx_draft.reset(llama_init_from_model(model_weights_draft.get(), default_ctx_params));
+    print("draft_llama_model_n_params:    {}", llama_model_n_params(w));
+
+    ctx_draft.reset(llama_init_from_model(w, default_ctx_params));
     if (!ctx_draft) {
       throw SpectreError("failed to create the llama_context for draft");
     }
@@ -1478,18 +1521,24 @@ private:
     print("draft_llama_n_batch:      {}", llama_n_batch(d));
     print("draft_llama_n_ubatch:     {}", llama_n_ubatch(d));
     print("draft_llama_n_seq_max:    {}", llama_n_seq_max(d));
-    print("draft_llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_draft.get(), nullptr));
+
+    const char *tmpl = llama_model_chat_template(w, nullptr);
+    print("draft_llama_model_chat_template:\n{}", tmpl ? tmpl : "(none)");
   }
 
   void load_target() {
+    ctx_target.reset();
+
     model_weights_target.reset(llama_model_load_from_file(params.target_model_path.c_str(), default_model_params));
     if (!model_weights_target) {
       throw SpectreError("failed to load target model");
     }
 
-    print("target_llama_model_n_params:    {}", llama_model_n_params(model_weights_target.get()));
+    auto w = model_weights_target.get();
 
-    ctx_target.reset(llama_init_from_model(model_weights_target.get(), default_ctx_params));
+    print("target_llama_model_n_params:    {}", llama_model_n_params(w));
+
+    ctx_target.reset(llama_init_from_model(w, default_ctx_params));
     if (!ctx_target) {
       throw SpectreError("failed to create the llama_context for target");
     }
@@ -1501,7 +1550,9 @@ private:
     print("target_llama_n_batch:      {}", llama_n_batch(t));
     print("target_llama_n_ubatch:     {}", llama_n_ubatch(t));
     print("target_llama_n_seq_max:    {}", llama_n_seq_max(t));
-    print("target_llama_model_chat_template:\n{}", llama_model_chat_template(model_weights_target.get(), nullptr));
+
+    const char *tmpl = llama_model_chat_template(w, nullptr);
+    print("target_llama_model_chat_template:\n{}", tmpl ? tmpl : "(none)");
   }
 
   void validate_vocab_compat() {
@@ -1555,38 +1606,63 @@ private:
     }
   }
 
+  void trim_new_lines(std::string *user_prompt) {
+    for (auto it = user_prompt->begin(); it != user_prompt->end(); ++it) {
+      if (*it == '\n') {
+        *it = ' ';
+      }
+    }
+    user_prompt->pop_back();
+  }
+
   void prepare_prompt() {
     auto wt = model_weights_target.get();
     auto wd = model_weights_draft.get();
 
-    llama_chat_message msg{
-        .role = "user",                  /* role */
-        .content = params.prompt.c_str() /* content */
-    };
+    std::string user_prompt;
+
+    if (!params.prompt_file.empty()) {
+      std::ifstream f(params.prompt_file);
+      if (!f) {
+        throw SpectreError("failed to open {} prompt file", params.prompt_file);
+      }
+      user_prompt.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      trim_new_lines(&user_prompt);
+    } else {
+      user_prompt = params.prompt;
+    }
+
+    std::string rendered;
 
     const char *tmpl = llama_model_chat_template(wt, nullptr);
     if (tmpl == nullptr) {
-      throw SpectreError("llama_model_chat_template failed");
-    }
+      print(GGML_LOG_LEVEL_WARN, "target model has no chat template, using raw prompt");
+      rendered = user_prompt;
+    } else {
+      llama_chat_message msg{
+          .role = "user",                /* role */
+          .content = user_prompt.c_str() /* content */
+      };
 
-    const int32_t need = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
-    if (need < 0) {
-      throw SpectreError("this custom template is not supported");
-    }
+      const int32_t need = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
+      if (need < 0) {
+        throw SpectreError("this custom template is not supported");
+      }
 
-    const std::size_t len = static_cast<std::size_t>(need);
-    std::string rendered(len, '\0');
+      const std::size_t len = static_cast<std::size_t>(need);
+      rendered.resize(len, '\0');
 
-    const int32_t got = llama_chat_apply_template(tmpl,                                 /* tmpl */
-                                                  &msg,                                 /* chat */
-                                                  1,                                    /* n_msg */
-                                                  true,                                 /* add_ass */
-                                                  rendered.data(),                      /* buf */
-                                                  static_cast<int32_t>(rendered.size()) /* length */
-    );
+      const int32_t got = llama_chat_apply_template(tmpl,                                 /* tmpl */
+                                                    &msg,                                 /* chat */
+                                                    1,                                    /* n_msg */
+                                                    true,                                 /* add_ass */
+                                                    rendered.data(),                      /* buf */
+                                                    static_cast<int32_t>(rendered.size()) /* length */
+      );
 
-    if (got != static_cast<int32_t>(rendered.size())) {
-      throw SpectreError("this custom template is not supported");
+      if (got != static_cast<int32_t>(rendered.size())) {
+        throw SpectreError("this custom template is not supported");
+      }
     }
 
     vocabulary_target = llama_model_get_vocab(wt);
@@ -1595,7 +1671,7 @@ private:
       vocabulary_draft = llama_model_get_vocab(wd);
     }
 
-    // tokenize the rendered chat template
+    // tokenize the chat template
     const int32_t prompt_target_len = -llama_tokenize(vocabulary_target,                     /* vocab */
                                                       rendered.c_str(),                      /* text */
                                                       static_cast<int32_t>(rendered.size()), /* text_len */
