@@ -498,6 +498,22 @@ struct LlamaSamplerDeleter {
 ///  Data Structures
 /// =================
 
+// how a drafted token is checked when sampling at temp > 0 (greedy always matches)
+enum class VerifyRule {
+  Match, // keep the draft iff the target's own sample is the same token
+  Ratio, // keep with probability min(1, p/q), redraw from the residual on rejection
+};
+
+static constexpr std::string_view verify_rule_to_string(const VerifyRule rule) {
+  switch (rule) {
+  case VerifyRule::Match:
+    return "match";
+  case VerifyRule::Ratio:
+    return "ratio";
+  }
+  return "ratio";
+}
+
 struct InferenceParameters {
   // the number of layers to store in VRAM (<0 means all layers)
   int32_t gpu_layers = -1;
@@ -520,6 +536,9 @@ struct InferenceParameters {
   int32_t top_k = 40;
 
   uint32_t seed = 1234; // target's seed, draft's seed is seed + 1 to avoid any collisions
+
+  // verification rule for draft-model rounds (--verify match|ratio)
+  VerifyRule verify = VerifyRule::Ratio;
 
   /// ================================
   ///  greedy exact-match speculation
@@ -580,6 +599,11 @@ struct InferenceParameters {
 
   bool ngram_speculative_decoding_is_enabled() const {
     return ngram;
+  }
+
+  // min(1, p/q) + residual only applies when sampling; greedy always uses the match rule
+  bool rejection_sampling_is_enabled() const {
+    return !greedy && verify == VerifyRule::Ratio;
   }
 };
 
@@ -951,11 +975,12 @@ private:
     m << "    \"top_p\": " << p.top_p << ",\n";
     m << "    \"top_k\": " << p.top_k << ",\n";
     m << "    \"greedy\": " << (p.greedy ? "true" : "false") << ",\n";
+    m << "    \"verify\": \"" << verify_rule_to_string(p.verify) << "\",\n";
     m << "    \"seed\": " << p.seed << ",\n";
     m << "    \"n_predict\": " << p.max_generated_tokens << ",\n";
     m << "    \"prompt_n_chars\": " << p.prompt.size() << ",\n";
-    m << "    \"prompt\": \"" << json_escape(p.prompt) << "\"\n";
-    m << "    \"prompt_file\": \"" << p.prompt_file << "\"\n";
+    m << "    \"prompt\": \"" << json_escape(p.prompt) << "\",\n";
+    m << "    \"prompt_file\": \"" << json_escape(p.prompt_file) << "\"\n";
     m << "  },\n";
     m << "  \"totals\": {\n";
     m << "    \"n_decoded_tokens\": " << tokens_decoded_count << ",\n";
@@ -1121,6 +1146,7 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --top-p <n>              top-p sampling (default: {})", params.top_p);
   print("  --top-k <n>              top-k sampling (default: {})", params.top_k);
   print("  --greedy                 greedy sampler; overrides temp/top-p/top-k (default: {})", params.greedy ? "true" : "false");
+  print("  --verify <rule>          draft verification at temp > 0: match | ratio (default: {})", verify_rule_to_string(params.verify));
   print("  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
   print("  --prompt-file <path>     initial prompt from file");
   print("");
@@ -1364,6 +1390,21 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
         }
       } else if (std::strcmp(argv[i], "--greedy") == 0) {
         params.greedy = true;
+      } else if (std::strcmp(argv[i], "--verify") == 0) {
+        if (i + 1 < argc) {
+          const std::string_view rule = argv[++i];
+          if (rule == "match") {
+            params.verify = VerifyRule::Match;
+          } else if (rule == "ratio") {
+            params.verify = VerifyRule::Ratio;
+          } else {
+            config.print_usage(argv);
+            throw SpectreError("Invalid value for --verify: {} (expected match or ratio)", rule);
+          }
+        } else {
+          config.print_usage(argv);
+          throw SpectreError("Missing argument for --verify");
+        }
       } else if (std::strcmp(argv[i], "--version") == 0) {
         print("ggml version:      {}", ggml_version());
         print("llama.cpp version: {} ({})", llama_build_number(), llama_commit());
@@ -1974,8 +2015,11 @@ private:
     print("target_llama_vocab_n_tokens:     {}", vocabulary_target_count);
     print("target_llama_vocab_type:         {}", llama_vocab_type_enum_to_string(llama_vocab_type(vocabulary_target)));
 
-    print("draft_llama_vocab_n_tokens:      {}", vocabulary_draft_count);
-    print("draft_llama_vocab_type:          {}", llama_vocab_type_enum_to_string(llama_vocab_type(vocabulary_draft)));
+    // no draft model in autoregressive runs, so vocabulary_draft is null
+    if (params.draft_speculative_decoding_is_enabled()) {
+      print("draft_llama_vocab_n_tokens:      {}", vocabulary_draft_count);
+      print("draft_llama_vocab_type:          {}", llama_vocab_type_enum_to_string(llama_vocab_type(vocabulary_draft)));
+    }
   }
 
   void add_default_sample_chains(struct llama_sampler *chain) {
@@ -2258,7 +2302,7 @@ private:
       }
 
       if (kind == VerificationKind::Correction &&
-          (algorithm == SpeculationAlgorithm::DraftBased && !params.greedy) &&
+          (algorithm == SpeculationAlgorithm::DraftBased && params.rejection_sampling_is_enabled()) &&
           (rejected_proposal_index.has_value() && *rejected_proposal_index < q.size())) {
 
         std::vector<llama_token_data> residual = build_residual_list(p[*rejected_proposal_index],
@@ -2610,7 +2654,7 @@ private:
           //
           const float *logits = llama_get_logits_ith(c, static_cast<int32_t>(i));
 
-          if (!params.greedy) {
+          if (params.rejection_sampling_is_enabled()) {
             std::vector<llama_token_data> candidate;
             candidate.reserve(static_cast<std::size_t>(vocabulary_target_count));
 
@@ -2646,7 +2690,7 @@ private:
           auto t = state.target;
           auto i = state.position;
 
-          if (algorithm == SpeculationAlgorithm::DraftBased && !params.greedy) {
+          if (algorithm == SpeculationAlgorithm::DraftBased && params.rejection_sampling_is_enabled()) {
             if (*i >= q.size()) {
               return should_accept_token({d, t}, rng);
             }
@@ -3085,7 +3129,7 @@ private:
       auto [_, prob] = softmax(logits, proposed_token, vocabulary_draft);
       p_drafts.push_back(prob);
 
-      if (!params.greedy) {
+      if (params.rejection_sampling_is_enabled()) {
         std::vector<llama_token_data> candidate;
         candidate.reserve(static_cast<std::size_t>(vocabulary_draft_count));
 
