@@ -5,85 +5,148 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(LLAMA_DIR
     "${CMAKE_SOURCE_DIR}/../llama.cpp"
-    CACHE PATH "Path to llama.cpp source tree")
+    CACHE PATH
+    "Path to llama.cpp source tree"
+)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+
 set(ENV{PKG_CONFIG_PATH} "${LLAMA_DIR}/build:$ENV{PKG_CONFIG_PATH}")
 pkg_check_modules(LLAMA REQUIRED IMPORTED_TARGET llama)
 
+# --- NVML (optional, GPU energy telemetry) ---
 find_path(
-  NVML_INCLUDE_DIR nvml.h
-  HINTS /usr/local/cuda/include /usr/local/cuda-12.0/include
-        "$ENV{CUDA_PATH}/include" "$ENV{CUDA_HOME}/include"
-  PATHS /usr/include)
+    NVML_INCLUDE_DIR
+    nvml.h
+    HINTS
+        /usr/local/cuda/include
+        /usr/local/cuda-12.0/include
+        "$ENV{CUDA_PATH}/include"
+        "$ENV{CUDA_HOME}/include"
+    PATHS /usr/include
+)
 
 find_library(
-  NVML_LIBRARY nvidia-ml HINTS /usr/lib/x86_64-linux-gnu /usr/lib64
-                               /usr/local/cuda/lib64 /usr/local/cuda-12.0/lib64)
+    NVML_LIBRARY
+    nvidia-ml
+    HINTS
+        /usr/lib/x86_64-linux-gnu
+        /usr/lib64
+        /usr/local/cuda/lib64
+        /usr/local/cuda-12.0/lib64
+)
 
 if(NVML_INCLUDE_DIR AND NVML_LIBRARY)
-  set(SPECTRE_HAVE_NVML ON)
-  message(STATUS "spectre: NVML include ${NVML_INCLUDE_DIR}")
-  message(STATUS "spectre: NVML library ${NVML_LIBRARY}")
+    set(SPECTRE_HAVE_NVML ON)
+    message(STATUS "spectre: NVML include ${NVML_INCLUDE_DIR}")
+    message(STATUS "spectre: NVML library ${NVML_LIBRARY}")
 else()
-  set(SPECTRE_HAVE_NVML OFF)
-  message(
-    WARNING
-      "spectre: NVML not found (nvml.h + libnvidia-ml), building without GPU energy telemetry. On Ubuntu: sudo apt install libnvidia-ml-dev"
-  )
+    set(SPECTRE_HAVE_NVML OFF)
+    message(
+        WARNING
+        "spectre: NVML not found (nvml.h + libnvidia-ml), building without GPU "
+        "energy telemetry. On Ubuntu: sudo apt install libnvidia-ml-dev"
+    )
 endif()
 
+# --- Main executable ---
 add_executable(spectre src/main.cpp)
 
+# --- Git version ---
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE SPECTRE_GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+
+if(NOT SPECTRE_GIT_HASH)
+    set(SPECTRE_GIT_HASH "unknown")
+endif()
+
+# --- Target configuration ---
+target_compile_definitions(
+    spectre
+    PRIVATE "SPECTRE_VERSION=\"${SPECTRE_GIT_HASH}\""
+)
+
 set_target_properties(
-  spectre
-  PROPERTIES CXX_STANDARD 23
-             CXX_STANDARD_REQUIRED ON
-             CXX_EXTENSIONS ON
-             BUILD_RPATH "${LLAMA_DIR}/build/bin"
-             INSTALL_RPATH "${LLAMA_DIR}/build/bin")
+    spectre
+    PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS ON
+        BUILD_RPATH "${LLAMA_DIR}/build/bin"
+        INSTALL_RPATH "${LLAMA_DIR}/build/bin"
+)
 
-target_compile_options(spectre PRIVATE -Wall -Wextra -Werror -Wpedantic
-                                       -Wconversion)
+target_compile_options(
+    spectre
+    PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion
+)
 
-target_include_directories(spectre PRIVATE ${LLAMA_DIR}/include
-                                           ${LLAMA_DIR}/ggml/include)
+target_include_directories(
+    spectre
+    PRIVATE ${LLAMA_DIR}/include ${LLAMA_DIR}/ggml/include
+)
 
+# --- Linking ---
 target_link_directories(spectre PRIVATE "${LLAMA_DIR}/build/bin")
-target_link_libraries(spectre PRIVATE llama-common PkgConfig::LLAMA
-                                      Threads::Threads)
+
+target_link_libraries(
+    spectre
+    PRIVATE llama-common PkgConfig::LLAMA Threads::Threads
+)
 
 if(SPECTRE_HAVE_NVML)
-  target_compile_definitions(spectre PRIVATE SPECTRE_HAVE_NVML)
-  target_include_directories(spectre SYSTEM PRIVATE ${NVML_INCLUDE_DIR})
-  target_link_libraries(spectre PRIVATE ${NVML_LIBRARY})
+    target_compile_definitions(spectre PRIVATE SPECTRE_HAVE_NVML)
+    target_include_directories(spectre SYSTEM PRIVATE ${NVML_INCLUDE_DIR})
+    target_link_libraries(spectre PRIVATE ${NVML_LIBRARY})
 endif()
 
 target_link_options(spectre PRIVATE "-Wl,-rpath-link,${LLAMA_DIR}/build/bin")
 
-foreach(_cuda_stub_dir /usr/local/cuda/lib64/stubs
-                       /usr/local/cuda/targets/x86_64-linux/lib/stubs)
-  if(EXISTS "${_cuda_stub_dir}/libcuda.so")
-    message(
-      STATUS "spectre: linking against CUDA driver stub at ${_cuda_stub_dir}")
-    target_link_directories(spectre PRIVATE "${_cuda_stub_dir}")
-    target_link_libraries(spectre PRIVATE cuda)
-    break()
-  endif()
+foreach(
+    _cuda_stub_dir
+    /usr/local/cuda/lib64/stubs
+    /usr/local/cuda/targets/x86_64-linux/lib/stubs
+)
+    if(EXISTS "${_cuda_stub_dir}/libcuda.so")
+        message(
+            STATUS
+            "spectre: linking against CUDA driver stub at ${_cuda_stub_dir}"
+        )
+        target_link_directories(spectre PRIVATE "${_cuda_stub_dir}")
+        target_link_libraries(spectre PRIVATE cuda)
+        break()
+    endif()
 endforeach()
 
+# --- Build flavour ---
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+
 if(ENABLE_ASAN)
-  target_compile_options(
-    spectre PRIVATE -fsanitize=address,leak -fstack-protector-strong
-                    -fno-omit-frame-pointer)
-  target_link_options(spectre PRIVATE -fsanitize=address,leak)
+    target_compile_options(
+        spectre
+        PRIVATE
+            -fsanitize=address,leak
+            -fstack-protector-strong
+            -fno-omit-frame-pointer
+    )
+    target_link_options(spectre PRIVATE -fsanitize=address,leak)
 else()
-  set_target_properties(spectre PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-  target_compile_options(
-    spectre
-    PRIVATE $<$<CONFIG:Release>:-ffp-contract=fast>
+    set_target_properties(spectre PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    target_compile_options(
+        spectre
+        PRIVATE
+            $<$<CONFIG:Release>:-ffp-contract=fast>
             #[[$<$<CONFIG:Release>:-ffast-math>]]
-            $<$<CONFIG:Release>:-march=native> $<$<CONFIG:Release>:-O3>)
+            $<$<CONFIG:Release>:-march=native>
+            $<$<CONFIG:Release>:-O3>
+    )
 endif()

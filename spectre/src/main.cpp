@@ -29,11 +29,19 @@
 #include <nvml.h>
 #endif
 
+#ifndef SPECTRE_VERSION
+#define SPECTRE_VERSION "unknown"
+#endif
+
 extern int llama_build_number(void);
 extern const char *llama_commit(void);
 extern const char *llama_compiler(void);
 extern const char *llama_build_target(void);
 extern const char *llama_build_info(void);
+
+static inline const char *spectre_version(void) {
+  return SPECTRE_VERSION;
+}
 
 /// ===========
 ///  Utilities
@@ -1408,6 +1416,7 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
       } else if (std::strcmp(argv[i], "--version") == 0) {
         print("ggml version:      {}", ggml_version());
         print("llama.cpp version: {} ({})", llama_build_number(), llama_commit());
+        print("spectre version:   {}", spectre_version());
         print("built with:        {} for {}", llama_compiler(), llama_build_target());
         std::exit(0);
       } else if (std::strcmp(argv[i], "--verbose") == 0) {
