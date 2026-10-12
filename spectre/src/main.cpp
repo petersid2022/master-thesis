@@ -506,7 +506,22 @@ struct LlamaSamplerDeleter {
 ///  Data Structures
 /// =================
 
-// how a drafted token is checked when sampling at temp > 0 (greedy always matches)
+// which n-gram drafter the hybrid path uses (--ngram-rule simple|mod)
+enum class NgramRule {
+  Simple, // most recent earlier occurrence of the last N tokens, copy what followed
+  Mod,    // hash table: last N tokens -> the token that followed them last time
+};
+
+static constexpr std::string_view ngram_rule_to_string(const NgramRule rule) {
+  switch (rule) {
+  case NgramRule::Simple:
+    return "simple";
+  case NgramRule::Mod:
+    return "mod";
+  }
+  return "simple";
+}
+
 enum class VerifyRule {
   Match, // keep the draft iff the target's own sample is the same token
   Ratio, // keep with probability min(1, p/q), redraw from the residual on rejection
@@ -561,6 +576,7 @@ struct InferenceParameters {
 
   // the n-gram cache implementation maintains statistics about short n-gram sequences
   bool ngram = false;
+  NgramRule ngram_rule = NgramRule::Simple;
 
   // length of the lookup pattern (n-gram)
   // lower values fire more often on short prompts,
@@ -977,6 +993,7 @@ private:
     m << "    \"min_tokens_to_draft\": " << p.min_tokens_to_draft << ",\n";
     m << "    \"max_tokens_to_draft\": " << p.max_tokens_to_draft << ",\n";
     m << "    \"ngram\": " << (p.ngram ? "true" : "false") << ",\n";
+    m << "    \"ngram_rule\": \"" << ngram_rule_to_string(p.ngram_rule) << "\",\n";
     m << "    \"n_gram_size\": " << p.n_gram_size << ",\n";
     m << "    \"m_gram_size\": " << p.m_gram_size << ",\n";
     m << "    \"temp\": " << p.temperature << ",\n";
@@ -1158,11 +1175,13 @@ void SpectreConfig::print_usage(char *argv[]) const {
   print("  --prompt <text>          initial prompt (default: \"{}\")", prompt_preview);
   print("  --prompt-file <path>     initial prompt from file");
   print("");
-  print("Speculation (only effective when --draft-model is set):");
-  print("  --ngram                  enable n-gram drafter (hybrid: ngram first, draft model on miss) (default: {})", params.ngram);
+  print("Speculation (enabled by --draft-model, --ngram, or both):");
+  print("  --ngram                  enable the n-gram drafter; with --draft-model the model drafts when the lookup");
+  print("                           misses (hybrid), without it a miss is a plain autoregressive step (default: {})", params.ngram);
+  print("  --ngram-rule <rule>      n-gram drafter: simple | mod (default: {})", ngram_rule_to_string(params.ngram_rule));
   print("  --n-gram-size <n>        lookup pattern length for the n-gram drafter (default: {})", params.n_gram_size);
-  print("  --m-gram-size <n>        max draft length proposed after an n-gram hit (default: {})", params.m_gram_size);
-  print("  --n-max <n>              max tokens to draft per speculative call (default: {})", params.max_tokens_to_draft);
+  print("  --m-gram-size <n>        max draft length proposed after an n-gram hit, simple rule (default: {})", params.m_gram_size);
+  print("  --n-max <n>              max tokens to draft per speculative round, any drafter (default: {})", params.max_tokens_to_draft);
   print("  --n-min <n>              min draft length; below this the draft is discarded (default: {})", params.min_tokens_to_draft);
   print("");
   print("Output / reproducibility:");
@@ -1398,6 +1417,21 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
         }
       } else if (std::strcmp(argv[i], "--greedy") == 0) {
         params.greedy = true;
+      } else if (std::strcmp(argv[i], "--ngram-rule") == 0) {
+        if (i + 1 < argc) {
+          const std::string_view rule = argv[++i];
+          if (rule == "simple") {
+            params.ngram_rule = NgramRule::Simple;
+          } else if (rule == "mod") {
+            params.ngram_rule = NgramRule::Mod;
+          } else {
+            config.print_usage(argv);
+            throw SpectreError("Invalid value for --ngram-rule: {} (expected simple or mod)", rule);
+          }
+        } else {
+          config.print_usage(argv);
+          throw SpectreError("Missing argument for --ngram-rule");
+        }
       } else if (std::strcmp(argv[i], "--verify") == 0) {
         if (i + 1 < argc) {
           const std::string_view rule = argv[++i];
@@ -1502,6 +1536,13 @@ SpectreConfig SpectreConfig::from_args(int argc, char *argv[]) {
     throw SpectreError("Error: --target-model argument is required");
   }
 
+  if (params.ngram && params.ngram_rule == NgramRule::Mod && params.n_gram_size < 16) {
+    print(GGML_LOG_LEVEL_WARN,
+          "ngram-mod with --n-gram-size {} is too small - poor quality is possible, "
+          "see: https://github.com/ggml-org/llama.cpp/pull/19164",
+          params.n_gram_size);
+  }
+
   if (params.run_id.empty()) {
     const std::string ts = InferenceRunRecorder::iso_timestamp(true);
 
@@ -1530,7 +1571,13 @@ private:
   ///  decode token -> token enters KV cache and produces next-token logits
   /// ======================================================================
 
-  std::vector<std::optional<llama_token>> pool; // last-seen successor table for ngram-mod
+  // ngram-mod: last-seen successor table, indexed by a hash of the last N tokens
+  // (ref: llama.cpp common/ngram-mod.cpp). fixed size, every slot starts empty
+  static constexpr llama_token NGRAM_MOD_EMPTY = -1;
+  static constexpr std::size_t NGRAM_MOD_POOL_SIZE = 4 * 1024 * 1024; // 16 MiB
+
+  std::size_t pool_next = 0; // first n-gram start in tokens_in_target_kv not yet added
+  std::vector<llama_token> pool = std::vector<llama_token>(NGRAM_MOD_POOL_SIZE, NGRAM_MOD_EMPTY);
 
   llama_token pending_token = 0; // token that's accepted but not yet in the target kv cache
 
@@ -1732,7 +1779,9 @@ private:
                                      const llama_token token,
                                      const struct llama_vocab *vocab = nullptr) {
 
-    const int count = (vocab == vocabulary_draft) ? vocabulary_draft_count : vocabulary_target_count;
+    // without a draft model vocabulary_draft is null, and so is a target call's default vocab
+    const bool is_draft = vocab != nullptr && vocab == vocabulary_draft;
+    const int count = is_draft ? vocabulary_draft_count : vocabulary_target_count;
 
     double max_logit = logits_row[0];
     for (int j = 1; j < count; ++j) {
@@ -2204,7 +2253,7 @@ private:
       int32_t len = llama_model_desc(weights.get(), buf.data(), buf.size());
 
       if (len > 0) {
-        size_t l = std::min(static_cast<size_t>(len), buf.size() - 1);
+        size_t l = std::min(static_cast<std::size_t>(len), buf.size() - 1);
         std::string_view desc(buf.data(), l);
         print("{:<13}:    {}", label, desc);
       }
@@ -2243,7 +2292,14 @@ private:
 
       // n-gram first if --ngram is set, otherwise (or on miss) the draft model
       if (params.ngram) {
-        proposed_tokens = draft_using_ngram_simple();
+        switch (params.ngram_rule) {
+        case NgramRule::Simple:
+          proposed_tokens = draft_using_ngram_simple();
+          break;
+        case NgramRule::Mod:
+          proposed_tokens = draft_using_ngram_mod();
+          break;
+        }
       }
 
       // fallback (hybrid)
@@ -2754,69 +2810,97 @@ private:
   //
 
   // https://en.wikipedia.org/wiki/Linear_congruential_generator
-  std::size_t lcg(const llama_token *token) {
+  // hashes the N tokens starting at tokens into a slot of the pool
+  std::size_t linear_congruential_generator(const llama_token *tokens) const {
     std::size_t res = 0;
 
-    for (int i = 0; i < params.n_gram_size; ++i) {
-      res = res * 6364136223846793005ULL + static_cast<std::size_t>(token[i]);
+    const auto n = static_cast<std::size_t>(params.n_gram_size);
+    for (std::size_t i = 0; i < n; ++i) {
+      res = res * 6364136223846793005ULL + static_cast<std::size_t>(tokens[i]);
     }
 
     return res % pool.size();
   }
 
-  void insert_token_to_ngram_mod_pool(const llama_token *tokens) {
-    const std::size_t i = lcg(tokens);
-
-    if (!pool[i].has_value()) {
-      pool.resize(pool.size() + 1);
-    }
-
-    pool[i] = tokens[params.n_gram_size];
+  // the token that followed these N tokens last time, or NGRAM_MOD_EMPTY
+  llama_token get_llama_token_from_ngram_mod_pool(const llama_token *tokens) const {
+    return pool[linear_congruential_generator(tokens)];
   }
 
-  //
-  // TODO: implement
-  //
+  // remember that tokens[N] followed tokens[0..N-1]; reads N + 1 tokens
+  // collisions simply overwrite: a wrong prediction is rejected by verification anyway
+  void insert_token_to_ngram_mod_pool(const llama_token *tokens) {
+    const std::size_t i = linear_congruential_generator(tokens);
+
+    const auto n = static_cast<std::size_t>(params.n_gram_size);
+    pool[i] = tokens[n];
+  }
+
+  // add every n-gram of the confirmed text that is not in the pool yet; the first call
+  // adds the whole prompt, later calls run in chunks of at least 32 new tokens
+  void update_ngram_mod_pool() {
+    const auto &tokens = tokens_in_target_kv;
+    const auto n = static_cast<std::size_t>(params.n_gram_size);
+
+    // an n-gram plus its successor must fit
+    if (tokens.size() < n + 1) {
+      return;
+    }
+
+    const std::size_t end = tokens.size() - n; // last start whose successor exists, exclusive
+    if (pool_next != 0 && pool_next + 32 >= end) {
+      return;
+    }
+
+    for (std::size_t i = pool_next; i < end; ++i) {
+      insert_token_to_ngram_mod_pool(tokens.data() + i);
+    }
+    pool_next = end;
+  }
+
   // last-seen successor table, indexed by a hash of the last n tokens
   // basically last time I saw this, the next token was X
   std::vector<llama_token> draft_using_ngram_mod() {
-    throw SpectreError("TODO: {}:{}: draft_using_ngram_mod", __FILE__, __LINE__);
-
     algorithm = SpeculationAlgorithm::NgramMod;
 
-    const auto &tokens = tokens_in_target_kv;
+    const auto &tokens = tokens_in_target_kv;  // tokens sampled, verified and decoded into target's KV
     const llama_token sampled = pending_token; // sampled but not decoded
     const std::size_t length = tokens.size();  // target kv cache length
 
-    // how many tokens each ngram consists of
-    const std::size_t N = static_cast<std::size_t>(params.n_gram_size);
+    // how many tokens each ngram consists of, and how many we may draft
+    const auto N = static_cast<std::size_t>(params.n_gram_size);
+    const auto M = static_cast<std::size_t>(params.max_tokens_to_draft);
 
-    // need the current n-gram plus at least one earlier position to search
-    if (N == 0 || length <= N + 1) {
+    p_drafts.clear();
+
+    // the window needs N - 1 confirmed tokens before the pending one
+    if (N == 0 || M == 0 || length < N - 1) {
       return {};
     }
 
-    std::vector<llama_token> result;
-    result.reserve(static_cast<std::size_t>(params.n_gram_size));
+    update_ngram_mod_pool();
 
-    std::vector<llama_token> ngram;
-    ngram.reserve(N);
+    // window = last N - 1 confirmed tokens + the pending token, followed by room for
+    // the drafts; each lookup reads the N tokens ending at the newest one, so the
+    // window slides along the buffer instead of being copied (as in llama.cpp)
+    std::vector<llama_token> buf;
+    buf.reserve(N + M);
+    for (std::size_t j = length - (N - 1); j < length; ++j) {
+      buf.push_back(tokens[j]);
+    }
+    buf.push_back(sampled);
 
-    // get the first ngram (starting from the end)
-    for (std::size_t j = length - N + 1; j < length; ++j) {
-      ngram.push_back(tokens[j]);
+    for (std::size_t i = 0; i < M; ++i) {
+      const llama_token predicted_token = get_llama_token_from_ngram_mod_pool(buf.data() + i);
+
+      if (predicted_token == NGRAM_MOD_EMPTY) {
+        break; // never seen this n-gram
+      }
+
+      buf.push_back(predicted_token);
     }
 
-    // add to that our pending token
-    ngram.push_back(sampled);
-
-    auto l = lcg(ngram.data());
-    auto a = std::next(pool.begin(), static_cast<std::ptrdiff_t>(l));
-
-    if (*a) {
-      auto value = (*a).value();
-      result.push_back(value);
-    }
+    std::vector<llama_token> result(buf.begin() + static_cast<std::ptrdiff_t>(N), buf.end());
 
     p_drafts.assign(result.size(), std::numeric_limits<double>::quiet_NaN());
 
